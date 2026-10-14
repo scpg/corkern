@@ -2,12 +2,19 @@
 # Shared helpers for corkern v2 hooks.
 #
 # Contract: hooks never block or break Claude Code. Every failure path exits 0 and
-# leaves a diagnostic — sync problems in $KR/.last-sync-<hook>-error (v1 format),
+# leaves a diagnostic — sync problems in $CK_STATE/last-sync-<hook>-error (v1 format),
 # setup problems in $CORKERN_STATE/last-hook-problem — for `corkern status`.
+#
+# Per-machine sync state ($CK_STATE = <git dir>/corkern: lock, last-sync-*, held) never lives in
+# the work tree: anyone who can push could commit a symlink at a work-tree path, and the hooks
+# would write through it. Hooks never write to a work-tree path with a shell redirection.
 # Hooks print nothing on stdout (SessionStart stdout would be injected into Claude's context).
 
 CORKERN_STATE="${XDG_STATE_HOME:-$HOME/.local/state}/corkern"
 CK_FORMAT=1   # knowledge repo format these hooks understand (src/corkern/knowledge_repo.py FORMAT_VERSION)
+# Never synced, whatever the (synced) .gitignore says — written to .git/info/exclude.
+# Same list as src/corkern/knowledge_repo.py MACHINE_LOCAL (tests check they match).
+CK_EXCLUDES=(corkern.conf.local .corkern.lock '.last-sync-*' '*.bak-*' .distill-prompt.md)
 export GIT_TERMINAL_PROMPT=0   # never wait for a credential prompt
 
 ck_note() {
@@ -74,19 +81,62 @@ ck_init() {
         ck_note "$1" "knowledge repo format $fmt is newer than these hooks understand ($CK_FORMAT) — update corkern (install.sh)"
         return 1
     fi
+    local gd
+    gd=$(git -C "$KR" rev-parse --absolute-git-dir 2>/dev/null) || { ck_note "$1" "$KR: git dir not found"; return 1; }
+    CK_STATE="$gd/corkern"
+    if [ -L "$CK_STATE" ] || ! mkdir -p -- "$CK_STATE" 2>/dev/null; then
+        ck_note "$1" "$CK_STATE is not a usable directory"; return 1
+    fi
+    ck_harden "$gd"
+    ck_migrate_state
     return 0
+}
+
+# ck_harden GIT-DIR — defence in depth, idempotent: links that reach the repo anyway are
+# checked out as plain files, and per-machine files stay unsynced even if a teammate pushes a
+# .gitignore without them
+ck_harden() {
+    local ex="$1/info/exclude" p
+    [ "$(git -C "$KR" config --local --get core.symlinks 2>/dev/null)" = false ] \
+        || git -C "$KR" config --local core.symlinks false 2>/dev/null
+    [ -L "$ex" ] && return 0
+    mkdir -p -- "$1/info" 2>/dev/null || return 0
+    for p in "${CK_EXCLUDES[@]}"; do
+        grep -qxF -- "$p" "$ex" 2>/dev/null || printf '%s\n' "$p" >> "$ex"
+    done
+}
+
+# ck_migrate_state — one time: state an older corkern kept in the work tree moves into
+# $CK_STATE. Only untracked regular files: a link is never followed (or moved), and a tracked
+# file belongs to the repo (a pushed one is held back by the pull, not adopted as our state).
+ck_migrate_state() {
+    local f name dest
+    for f in "$KR"/.corkern.lock "$KR"/.last-sync-*; do
+        [ -f "$f" ] && [ ! -L "$f" ] || continue
+        name=${f##*/}
+        git -C "$KR" ls-files --error-unmatch -- "$name" >/dev/null 2>&1 && continue
+        case "$name" in
+            .corkern.lock) rm -f -- "$f"; continue ;;
+            .last-sync-untrusted) dest="$CK_STATE/held" ;;
+            *) dest="$CK_STATE/${name#.}" ;;
+        esac
+        if [ -e "$dest" ] || [ -L "$dest" ]; then rm -f -- "$f"; else mv -T -- "$f" "$dest" 2>/dev/null; fi
+    done
 }
 
 ck_git() { git -C "$KR" "$@"; }
 
 # ck_lock SECONDS — serialize git work across hooks and sessions (fd 9 held until exit)
-ck_lock() { exec 9>"$KR/.corkern.lock" && flock -w "${1:-10}" 9; }
+ck_lock() { exec 9>"$CK_STATE/lock" && flock -w "${1:-10}" 9; }
 
-ck_stamp() { date '+%Y-%m-%d %H:%M:%S' > "$KR/.last-sync-$1"; rm -f "$KR/.last-sync-$1-error"; }
+ck_stamp() { date '+%Y-%m-%d %H:%M:%S' > "$CK_STATE/last-sync-$1"; rm -f -- "$CK_STATE/last-sync-$1-error"; }
+
+# ck_redact_urls — strip user:password@ / token@ from URLs (stdin → stdout)
+ck_redact_urls() { sed -E 's#([A-Za-z][A-Za-z0-9+.-]*://)[^/@[:space:]]*@#\1#g'; }
 
 # ck_due WHAT SECONDS — true if the last WHAT (pull/push) is older than SECONDS (or never)
 ck_due() {
-    local f="$KR/.last-sync-$1" ts
+    local f="$CK_STATE/last-sync-$1" ts
     [ -f "$f" ] || return 0
     ts=$(date -d "$(cat "$f")" +%s 2>/dev/null) || return 0
     [ $(( $(date +%s) - ts )) -ge "$2" ]
@@ -102,7 +152,7 @@ ck_error() {
         echo "branch    : $(ck_git branch --show-current 2>/dev/null || echo unknown)"
         echo "reason    : $reason"
         [ -n "$detail" ] && echo "detail    : $detail"
-    } > "$KR/.last-sync-$hook-error"
+    } | ck_redact_urls > "$CK_STATE/last-sync-$hook-error"
 }
 
 # ck_preflight HOOK — can we talk to the remote right now?
@@ -110,7 +160,7 @@ ck_preflight() {
     if ! ck_git remote get-url origin >/dev/null 2>&1; then
         ck_error "$1" "no remote configured" "run: git -C $KR remote add origin <url>"; return 1
     fi
-    if [ -f "$KR/.git/MERGE_HEAD" ] || [ -d "$KR/.git/rebase-merge" ] || [ -d "$KR/.git/rebase-apply" ]; then
+    if ck_in_progress; then
         ck_error "$1" "repo is in a merge/rebase state" "resolve it in $KR"; return 1
     fi
     if ! timeout 10 git -C "$KR" ls-remote --quiet origin HEAD >/dev/null 2>&1; then
@@ -193,16 +243,19 @@ ck_commit_memory() {
 # 5-device stress test). Instead: fetch (network, no file changes), commit everything, then
 # rebase locally (milliseconds). If a write sneaks in, git refuses → commit it and retry.
 ck_pull() {
-    local out tries
+    local out tries up
     out=$(ck_git fetch -q 2>&1) || { ck_error "$1" "git fetch failed" "$out"; return 1; }
     ck_track_upstream || { ck_commit_all "auto: sync" || true; ck_stamp pull; return 0; }  # empty remote
-    ck_verify_incoming "$1" || { ck_commit_all "auto: sync" || true; return 1; }
+    # Resolve once: what is inspected is exactly what gets integrated
+    up=$(ck_git rev-parse --verify -q '@{upstream}^{commit}' 2>/dev/null) \
+        || { ck_error "$1" "could not resolve the upstream branch"; return 1; }
+    ck_verify_incoming "$1" "$up" || { ck_commit_all "auto: sync" || true; return 1; }
     for tries in 1 2 3; do
         ck_commit_all "auto: sync" || true
-        if out=$(ck_git rebase -q '@{upstream}' 2>&1); then ck_stamp pull; return 0; fi
+        if out=$(ck_git rebase -q "$up" 2>&1); then ck_stamp pull; return 0; fi
         if ck_in_progress; then                      # real conflict → keep both versions
             ck_git rebase --abort >/dev/null 2>&1
-            ck_merge_keep_both "$1" "$out"
+            ck_merge_keep_both "$1" "$out" "$up"
             return
         fi
         # Refused without starting: a write landed after our commit → commit it and retry.
@@ -216,26 +269,74 @@ ck_pull() {
     return 1
 }
 
-# ── Only integrate what a trusted device signed ───────────────────────────────────────────
-# Verification is on when this machine has a trust store (`corkern trust --enable`): the keys
-# THIS machine confirmed. It lives in .git/, so it is never synced — a commit that adds a key to
-# the synced .devices/allowed_signers cannot vouch for itself. Incoming commits that are
-# unsigned or signed by an untrusted key are not integrated; they are listed in
-# .last-sync-untrusted until `corkern trust` accepts them (or their device).
-ck_verify_incoming() {
-    local trust="$KR/.git/corkern/trusted_signers" accepted="$KR/.git/corkern/accepted" sha
-    local -a held=()
-    if [ ! -f "$trust" ]; then rm -f "$KR/.last-sync-untrusted"; return 0; fi
-    while IFS= read -r sha; do
-        [ -f "$accepted" ] && grep -qx -- "$sha" "$accepted" && continue
-        ck_git -c gpg.ssh.allowedSignersFile="$trust" -c gpg.ssh.program=ssh-keygen \
-            verify-commit "$sha" >/dev/null 2>&1 || held+=("$sha")
-    done < <(ck_git rev-list --reverse 'HEAD..@{upstream}' 2>/dev/null)
-    if [ "${#held[@]}" -eq 0 ]; then rm -f "$KR/.last-sync-untrusted"; return 0; fi
-    printf '%s\n' "${held[@]}" > "$KR/.last-sync-untrusted"
-    ck_error "$1" "held back ${#held[@]} incoming commit(s) not signed by a device this machine trusts" \
-        "review them with: corkern trust"
+# ── Inspect before integrating ────────────────────────────────────────────────────────────
+# Nothing from the remote reaches the work tree before it is inspected, and any error while
+# inspecting holds EVERYTHING back (fail closed). Held commits are listed, one per line as
+# "<sha><TAB><reason>", in $CK_STATE/held — shown by `corkern status`, `corkern trust` and the
+# session context.
+#
+# 1. Content: the net change from the merge base to the upstream commit (rebase and merge only
+#    ever check out that commit, never the ones in between) must not add or change a symlink,
+#    a path named like corkern's per-machine state, or Claude Code configuration at the repo
+#    root. Once the remote removes such a path, the range is integrated again.
+# 2. Signatures, when this machine has a trust store (`corkern trust --enable`): the keys THIS
+#    machine confirmed. It lives in .git/, so it is never synced — a commit that adds a key to
+#    the synced .devices/allowed_signers cannot vouch for itself. Unsigned or untrusted commits
+#    wait until `corkern trust` accepts them (or their device).
+
+# ck_dangerous MODE PATH — prints why an incoming MODE/PATH may not be checked out
+ck_dangerous() {
+    local mode="$1" path="$2" base="${2##*/}"
+    if [ "$mode" = 120000 ]; then echo "symlink"; return 0; fi
+    case "$base" in .corkern.lock|.last-sync-*) echo "named like corkern's per-machine state"; return 0 ;; esac
+    case "$path" in .claude|.claude/*|.mcp.json) echo "Claude Code configuration"; return 0 ;; esac
     return 1
+}
+
+ck_hold() {  # ck_hold HOOK MESSAGE LINES... — record held commits, report, return 1
+    local hook="$1" msg="$2" tmp
+    shift 2
+    tmp=$(mktemp -- "$CK_STATE/held.XXXXXX") || { ck_error "$hook" "$msg"; return 1; }
+    printf '%s\n' "$@" > "$tmp" && mv -T -f -- "$tmp" "$CK_STATE/held"
+    ck_error "$hook" "$msg" "review them with: corkern trust"
+    return 1
+}
+
+ck_verify_incoming() {
+    local hook="$1" up="$2" trust="$CK_STATE/trusted_signers" accepted="$CK_STATE/accepted"
+    local head base commits meta path mode why sha raw
+    local -a held=()
+    local fail="could not inspect incoming commits — nothing integrated"
+    head=$(ck_git rev-parse --verify -q 'HEAD^{commit}' 2>/dev/null) \
+        || { ck_hold "$hook" "$fail" "ERROR"$'\t'"could not inspect incoming commits (no HEAD)"; return 1; }
+    base=$(ck_git merge-base "$head" "$up" 2>/dev/null) \
+        || { ck_hold "$hook" "$fail" "ERROR"$'\t'"could not inspect incoming commits (no merge base)"; return 1; }
+    commits=$(ck_git rev-list --reverse "$head..$up" -- 2>/dev/null) \
+        || { ck_hold "$hook" "$fail" "ERROR"$'\t'"could not inspect incoming commits (rev-list failed)"; return 1; }
+    raw=$(mktemp -- "$CK_STATE/incoming.XXXXXX") \
+        || { ck_hold "$hook" "$fail" "ERROR"$'\t'"could not inspect incoming commits (no temp file)"; return 1; }
+    if ! ck_git diff --raw -z --no-renames --no-ext-diff --no-textconv "$base" "$up" -- > "$raw" 2>/dev/null; then
+        rm -f -- "$raw"
+        ck_hold "$hook" "$fail" "ERROR"$'\t'"could not inspect incoming commits (diff failed)"; return 1
+    fi
+    while IFS= read -r -d '' meta && IFS= read -r -d '' path; do
+        [ "${meta##* }" = D ] && continue                       # removing something is always fine
+        mode=${meta#:}; mode=${mode#* }; mode=${mode%% *}       # ":old new osha nsha S" → new
+        why=$(ck_dangerous "$mode" "$path") || continue
+        sha=$(ck_git log -1 --format=%H "$head..$up" -- "$path" 2>/dev/null)
+        held+=("${sha:-$up}"$'\t'"$why: $path")
+    done < "$raw"
+    rm -f -- "$raw"
+    if [ -f "$trust" ]; then
+        while IFS= read -r sha; do
+            [ -n "$sha" ] || continue
+            [ -f "$accepted" ] && grep -qx -- "$sha" "$accepted" && continue
+            ck_git -c gpg.ssh.allowedSignersFile="$trust" -c gpg.ssh.program=ssh-keygen \
+                verify-commit "$sha" >/dev/null 2>&1 || held+=("$sha"$'\t'"not signed by a device this machine trusts")
+        done <<< "$commits"
+    fi
+    if [ "${#held[@]}" -eq 0 ]; then rm -f -- "$CK_STATE/held"; return 0; fi
+    ck_hold "$hook" "held back incoming commits (${#held[@]} reason(s)) — nothing integrated" "${held[@]}"
 }
 
 # ck_track_upstream — make sure the branch tracks origin/<branch>. Returns 1 when the remote
@@ -269,34 +370,54 @@ ck_conflict_name() {  # ck_conflict_name PATH → sibling name for the local cop
     if [[ "$base" == *.* ]]; then echo "${f%.*}.$tag.${f##*.}"; else echo "$f.$tag"; fi
 }
 
+# ck_put BLOB REL — write a blob to a work-tree path without following links: refused if a
+# folder on the way is a symlink; written to a temp file next to it, then renamed over the path
+# (a link there is replaced, never followed)
+ck_put() {
+    local blob="$1" rel="$2" dir c part tmp
+    dir=$(dirname -- "$rel")
+    c="$KR"
+    if [ "$dir" != . ]; then
+        IFS=/ read -ra parts <<< "$dir"
+        for part in "${parts[@]}"; do
+            c="$c/$part"
+            [ -L "$c" ] && return 1
+        done
+    fi
+    mkdir -p -- "$KR/$dir" || return 1
+    tmp=$(mktemp -- "$KR/$dir/.corkern-put.XXXXXX") || return 1
+    if ! ck_git show "$blob" > "$tmp" || ! chmod "$(printf '%o' $(( 0666 & ~0$(umask) )))" -- "$tmp"; then
+        rm -f -- "$tmp"; return 1
+    fi
+    mv -T -f -- "$tmp" "$KR/$rel"
+}
+
 ck_merge_keep_both() {
-    local hook="$1" rebase_out="$2" up f copy kept=()
-    up=$(ck_git rev-parse --abbrev-ref '@{upstream}' 2>/dev/null) || {
-        ck_error "$hook" "git pull --rebase failed (no upstream to merge)" "$rebase_out"; return 1; }
+    local hook="$1" rebase_out="$2" up="$3" f copy ok=1 kept=()
     ck_commit_all "auto: sync" || true
     if ck_git merge --no-edit -q "$up" >/dev/null 2>&1; then ck_stamp pull; return 0; fi
     while IFS= read -r -d '' f; do
         if ck_git cat-file -e ":3:$f" 2>/dev/null; then
-            ck_git show ":3:$f" > "$KR/$f"                       # remote version at the path
+            ck_put ":3:$f" "$f" || { ok=0; break; }              # remote version at the path
             if ck_git cat-file -e ":2:$f" 2>/dev/null; then       # both sides have it → keep ours too
                 copy=$(ck_conflict_name "$f")
-                ck_git show ":2:$f" > "$KR/$copy"
+                ck_put ":2:$f" "$copy" || { ok=0; break; }
                 ck_git add -- "$copy"
                 kept+=("$copy")
             fi
         else
-            ck_git show ":2:$f" > "$KR/$f"                       # remote deleted it → keep ours
+            ck_put ":2:$f" "$f" || { ok=0; break; }              # remote deleted it → keep ours
         fi
         ck_git add -- "$f"
     done < <(ck_git diff --name-only -z --diff-filter=U)
-    if [ -n "$(ck_git diff --name-only --diff-filter=U)" ] \
+    if [ "$ok" = 0 ] || [ -n "$(ck_git diff --name-only --diff-filter=U)" ] \
         || ! ck_git commit -q --no-edit >/dev/null 2>&1; then
         ck_git merge --abort >/dev/null 2>&1
         ck_error "$hook" "pull failed: rebase and merge both conflicted (repo restored)" "$rebase_out"
         return 1
     fi
     if [ "${#kept[@]}" -gt 0 ]; then
-        printf '%s kept local copy: %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "${kept[@]}" >> "$KR/.last-sync-conflicts"
+        printf '%s kept local copy: %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "${kept[@]}" >> "$CK_STATE/last-sync-conflicts"
     fi
     ck_stamp pull
     return 0
@@ -319,7 +440,7 @@ ck_push() {
 
 ck_ahead() {
     local n
-    n=$(ck_git rev-list --count '@{upstream}..HEAD' 2>/dev/null) || return 0  # no upstream yet → try
+    n=$(ck_git rev-list --count '@{upstream}..HEAD' -- 2>/dev/null) || return 0  # no upstream yet → try
     [ "$n" -gt 0 ]
 }
 

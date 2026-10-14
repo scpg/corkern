@@ -37,6 +37,13 @@ def test_doctor_alias(kr):
     assert "Knowledge repo" in runner.invoke(app, ["doctor"], env={"CORKERN_MEMORY_DIR": str(kr)}).output
 
 
+def state(repo, name):
+    """A file in the repo's per-machine sync state (hooks/lib.sh $CK_STATE)."""
+    d = repo / ".git" / "corkern"
+    d.mkdir(parents=True, exist_ok=True)
+    return d / name
+
+
 def test_stuck_rebase_fails(kr):
     (kr / ".git" / "rebase-merge").mkdir()
     r = status(kr)
@@ -45,9 +52,9 @@ def test_stuck_rebase_fails(kr):
 
 
 def test_reports_sync_errors_and_conflicts(kr):
-    (kr / ".last-sync-push-error").write_text("timestamp : x\nreason    : git push failed after retry\n")
-    (kr / ".last-sync-pull").write_text("2026-10-01 10:00:00")
-    (kr / ".last-sync-conflicts").write_text("a kept\nb kept\n")
+    state(kr, "last-sync-push-error").write_text("timestamp : x\nreason    : git push failed after retry\n")
+    state(kr, "last-sync-pull").write_text("2026-10-01 10:00:00")
+    state(kr, "last-sync-conflicts").write_text("a kept\nb kept\n")
     r = status(kr)
     assert "Last push failed: git push failed after retry" in r.output
     assert "Last pull: 2026-10-01 10:00:00" in r.output

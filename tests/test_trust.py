@@ -101,7 +101,7 @@ def test_untrusted_device_is_held_back_until_trusted(devs):
     b.sync()
     a.hook("corkern-pull")
     assert not (a.repo / "memory/p/from-b.md").exists()
-    assert (a.repo / ".last-sync-untrusted").is_file()
+    assert (a.repo / ".git" / "corkern" / "held").is_file()
     status = a.c2("status").stdout
     assert "held back" in status and "corkern trust" in status
     shown = a.c2("trust").stdout
@@ -111,7 +111,7 @@ def test_untrusted_device_is_held_back_until_trusted(devs):
     assert "Trusted" in r.stdout and "next session start" in r.stdout
     a.hook("corkern-pull")
     assert (a.repo / "memory/p/from-b.md").read_text() == "desktop note\n"
-    assert not (a.repo / ".last-sync-untrusted").exists()
+    assert not (a.repo / ".git" / "corkern" / "held").exists()
 
 
 def test_trusted_devices_sync_normally(devs):

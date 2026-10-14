@@ -136,6 +136,21 @@ class MemoryRepo:
         guard.write_text(self._memory_file(slug, filename), content)
 
 
+def repo_state_dir(repo: Path) -> Path:
+    """This machine's sync state for a knowledge repo (lock, last-sync-*, held, trust store):
+    inside .git, never in the work tree, where anyone who can push could plant a symlink.
+    Same place as hooks/lib.sh $CK_STATE."""
+    return repo / ".git" / "corkern"
+
+
+_URL_USERINFO = re.compile(r"([A-Za-z][A-Za-z0-9+.-]*://)[^/@\s]*@")
+
+
+def safe_url(url: str) -> str:
+    """A remote URL fit to print or store: user:password@ / token@ removed."""
+    return _URL_USERINFO.sub(r"\1", url)
+
+
 def state_dir() -> Path:
     """Per-machine state outside the knowledge repo (never synced) — same as hooks/lib.sh."""
     return Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local/state") / "corkern"

@@ -166,7 +166,7 @@ expect "…then receives the carry-over" "from the old machine" cat /home/new/.c
 if [ "$FAIL" -gt 0 ]; then
     section "diagnostics"
     c2 new trust; c2 new status | sed -n '/Sync/,/Tools/p'
-    as new bash -c "cat ~/.corkern/.last-sync-* 2>/dev/null; cat ~/.corkern/.git/corkern/trusted_signers; git -C ~/.corkern log --oneline -5 --all --format='%h %G? %GK %an %s'"
+    as new bash -c "cat ~/.corkern/.git/corkern/last-sync-* ~/.corkern/.git/corkern/held 2>/dev/null; cat ~/.corkern/.git/corkern/trusted_signers; git -C ~/.corkern log --oneline -5 --all --format='%h %G? %GK %an %s'"
 fi
 
 section "rollback on old"

@@ -14,6 +14,7 @@ from pathlib import Path
 import typer
 
 from corkern import guard
+from corkern.config import safe_url
 
 SIGNERS = ".devices/allowed_signers"
 GITHUB_REMOTE = re.compile(r"(?:git@github\.com:|https://github\.com/|ssh://git@github\.com/)([^/]+/[^/]+?)(?:\.git)?$")
@@ -111,7 +112,7 @@ def _local(c: Check, repo: Path) -> tuple[Path | None, Path | None]:
     if not remote:
         c.warn("No remote configured — memories stay on this machine")
         return sign_key, push_key
-    c.ok(f"Remote: {remote}")
+    c.ok(f"Remote: {safe_url(remote)}")
     ssh_cmd = _git(repo, "config", "--local", "--get", "core.sshCommand") or ""
     if not push_key:
         c.warn("No per-machine push key — pushes use your normal SSH setup (may need 1Password approval)",

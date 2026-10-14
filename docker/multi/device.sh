@@ -76,8 +76,8 @@ fire corkern-pull
     echo "tree $(git -C "$KR" rev-parse 'HEAD^{tree}')"
     echo "status $(git -C "$KR" status --porcelain | wc -l)"
     [ -d "$KR/.git/rebase-merge" ] || [ -d "$KR/.git/rebase-apply" ] || [ -f "$KR/.git/MERGE_HEAD" ] && echo "stuck yes"
-    for f in "$KR"/.last-sync-*-error; do [ -f "$f" ] && echo "error $(basename "$f"): $(grep reason "$f")"; done
-    [ -f "$KR/.last-sync-conflicts" ] && echo "conflicts $(wc -l < "$KR/.last-sync-conflicts")"
+    for f in "$KR"/.git/corkern/last-sync-*-error; do [ -f "$f" ] && echo "error $(basename "$f"): $(grep reason "$f")"; done
+    [ -f "$KR/.git/corkern/last-sync-conflicts" ] && echo "conflicts $(wc -l < "$KR/.git/corkern/last-sync-conflicts")"
 } > "$SHARED/result-dev$N.txt"
 touch "$FLAGS/done-$N"
 wait_for "$FLAGS/verified"   # stay up until the judge is done (compose aborts on first exit)

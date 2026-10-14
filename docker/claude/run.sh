@@ -170,8 +170,8 @@ else
         as alice env CORKERN_MEMORY_DIR=/home/alice/.corkern timeout 300 corkern distill --auto --model haiku
     expect "synthesis has frontmatter + Claude's sections" "## " cat /home/alice/.corkern/memory/global/synthesis.md
     assert "no hook problems recorded (alice)" test ! -e /home/alice/.local/state/corkern/last-hook-problem
-    assert "no sync errors (alice)" bash -c "! ls /home/alice/.corkern/.last-sync-*-error 2>/dev/null | grep -q ."
-    assert "no sync errors (bob)" bash -c "! ls /home/bob/.corkern/.last-sync-*-error 2>/dev/null | grep -q ."
+    assert "no sync errors (alice)" bash -c "! ls /home/alice/.corkern/.git/corkern/last-sync-*-error 2>/dev/null | grep -q ."
+    assert "no sync errors (bob)" bash -c "! ls /home/bob/.corkern/.git/corkern/last-sync-*-error 2>/dev/null | grep -q ."
     assert "Claude-created MEMORY.md merged, no conflict copies" \
         bash -c "! find /home/bob/.corkern/memory -name '*.conflict-*' | grep -q ."
     if [ "$FAIL" -gt 0 ]; then
@@ -180,7 +180,7 @@ else
         echo "alice commits:"; git -C /home/alice/.corkern log --format="  %s" -8
         echo "bob status:"; git -C /home/bob/.corkern status --porcelain
         echo "bob memory/demo:"; ls -la /home/bob/.corkern/memory/demo
-        echo "bob state:"; find /home/bob/.corkern -maxdepth 1 -name ".last-sync*" -printf "  %f %TT\n"
+        echo "bob state:"; find /home/bob/.corkern/.git/corkern -maxdepth 1 -name "last-sync*" -printf "  %f %TT\n"
         cat /home/bob/.local/state/corkern/last-hook-problem 2>/dev/null
     fi
 fi

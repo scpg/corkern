@@ -14,8 +14,8 @@ import typer
 from corkern import __version__, guard
 from corkern.commands.init_device_cmd import HOOK_EVENTS
 from corkern.commands.secrets_cmd import log_entries
-from corkern.commands.trust_cmd import HELD, trust_file
-from corkern.config import load_config, state_dir
+from corkern.commands.trust_cmd import UNTRUSTED, held_entries, trust_file
+from corkern.config import load_config, repo_state_dir, safe_url, state_dir
 from corkern.memory_index import usage
 
 
@@ -69,7 +69,7 @@ def _sync_checks(r: Report, kr: Path) -> None:
         r.warn("No remote configured — memories stay on this machine "
                f"(git -C {kr} remote add origin <url>)")
     else:
-        r.ok(f"Remote: {remote}")
+        r.ok(f"Remote: {safe_url(remote)}")
         if _git(kr, "ls-remote", "--quiet", "origin", "HEAD", timeout=10) is None:
             r.warn("Remote not reachable (offline or auth issue)")
         counts = _git(kr, "rev-list", "--left-right", "--count", "@{upstream}...HEAD")
@@ -84,18 +84,19 @@ def _sync_checks(r: Report, kr: Path) -> None:
     dirty = _git(kr, "status", "--porcelain")
     if dirty:
         r.warn(f"{len(dirty.splitlines())} uncommitted change(s) — committed by the next hook run")
+    state = repo_state_dir(kr)
     for what in ("pull", "push"):
-        stamp, error = _read(kr / f".last-sync-{what}"), _read(kr / f".last-sync-{what}-error")
+        stamp, error = _read(state / f"last-sync-{what}"), _read(state / f"last-sync-{what}-error")
         if error:
             reason = next((line.split(":", 1)[1].strip() for line in error.splitlines()
                            if line.startswith("reason")), "see file")
-            r.fail(f"Last {what} failed: {reason}  ({kr / f'.last-sync-{what}-error'})") \
+            r.fail(f"Last {what} failed: {reason}  ({state / f'last-sync-{what}-error'})") \
                 if what == "push" else r.warn(f"Last {what} failed: {reason}")
         elif stamp:
             r.ok(f"Last {what}: {stamp}")
         else:
             r.warn(f"Last {what}: never recorded (hooks not wired on this machine yet)")
-    conflicts = _read(kr / ".last-sync-conflicts")
+    conflicts = _read(state / "last-sync-conflicts")
     if conflicts:
         r.warn(f"{len(conflicts.splitlines())} conflicting edit(s) kept side by side as "
                "*.conflict-<host>-<time>.* — review and merge them by hand")
@@ -124,9 +125,15 @@ def _repo_checks(r: Report, kr: Path) -> None:
         for rel in links:
             r.info(f"    {rel}")
     ignore = _read(kr / ".gitignore") or ""
-    for pattern in ("corkern.conf.local", ".last-sync-*", ".corkern.lock", ".distill-prompt.md"):
-        if pattern not in ignore:
-            r.warn(f"{pattern} not in .gitignore — machine-local state could be committed")
+    from corkern.knowledge_repo import MACHINE_LOCAL
+    excluded = (_read(kr / ".git" / "info" / "exclude") or "").splitlines()
+    missing = [p for p in MACHINE_LOCAL if p not in excluded]
+    if missing:
+        r.warn(f"Not excluded in .git/info/exclude: {' '.join(missing)} — machine-local state could be "
+               "committed (the next hook run adds them)")
+    if (_git(kr, "config", "--local", "--get", "core.symlinks") or "") != "false":
+        r.warn("core.symlinks is not false — a symlink that reaches the repo would be checked out as a "
+               "link (the next hook run sets it)")
     attributes = _read(kr / ".gitattributes") or ""
     for pattern in ("memory/**/MEMORY.md", "corkern.conf", ".metrics.tsv"):
         if f"{pattern} merge=union" not in attributes:
@@ -162,7 +169,15 @@ def _safety_checks(r: Report, repo) -> None:
                "are kept on this machine only — review: corkern secrets")
     else:
         r.ok("No secrets removed before commit on this machine (check the repo: corkern secrets --scan)")
-    held = _read(kr / HELD)
+    entries = held_entries(kr)
+    errors = [reason for sha, reason in entries if sha == "ERROR"]
+    content = [reason for sha, reason in entries if sha != "ERROR" and reason != UNTRUSTED]
+    if errors:
+        r.warn(f"Last pull integrated nothing: {errors[0]} — the next session start retries")
+    if content:
+        r.warn(f"Incoming commit(s) held back — they add content this machine never checks out: "
+               f"{'; '.join(dict.fromkeys(content))} — review: corkern trust")
+    held = " ".join(sha for sha, reason in entries if reason == UNTRUSTED)
     if trust_file(kr).is_file():
         trusted = [line for line in guard.read_text(trust_file(kr)).splitlines() if line.strip()]
         r.ok(f"Pull verification on — {len(trusted)} trusted device key(s)")

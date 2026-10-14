@@ -18,8 +18,8 @@ import typer
 
 from corkern import guard, hooks_install
 from corkern.commands.reminders import fail
-from corkern.config import CONF_FILE, machine_conf_path, machine_memory_dir, write_machine_conf
-from corkern.knowledge_repo import InitError, init_repo
+from corkern.config import CONF_FILE, machine_conf_path, machine_memory_dir, safe_url, write_machine_conf
+from corkern.knowledge_repo import InitError, harden, init_repo
 from corkern.migrate import migrate as run_migrate
 
 
@@ -53,10 +53,12 @@ def setup(
     try:
         if mode == "clone":
             guard.make_dirs(kr.parent)
-            typer.echo(f"Cloning knowledge repo {clone} → {kr}")
-            guard.run_git(kr.parent, "clone", "-q", "--", clone, str(kr), timeout=300)
+            typer.echo(f"Cloning knowledge repo {safe_url(clone)} → {kr}")
+            # no symlink is ever checked out, not even by the first checkout
+            guard.run_git(kr.parent, "clone", "-q", "-c", "core.symlinks=false", "--", clone, str(kr), timeout=300)
+            harden(kr)
             if not (kr / CONF_FILE).is_file():
-                fail(f"{clone} is not a corkern knowledge repo (no {CONF_FILE}); the clone is left at {kr}")
+                fail(f"{safe_url(clone)} is not a corkern knowledge repo (no {CONF_FILE}); the clone is left at {kr}")
         elif mode in ("new", "github"):
             init_repo(kr)
             typer.echo(f"Created knowledge repo {kr}")

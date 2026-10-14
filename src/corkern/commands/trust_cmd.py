@@ -12,7 +12,9 @@ listed in the synced `.devices/allowed_signers`. That list is a directory, not a
 decision: anyone who can push could add a key to it. Each machine therefore keeps its OWN
 trust store in `.git/corkern/trusted_signers` (never synced), filled only by the user
 confirming a fingerprint here. With a trust store present, the hooks integrate an incoming
-commit only if a trusted key signed it; everything else waits in `.last-sync-untrusted`.
+commit only if a trusted key signed it; everything else waits, listed in `.git/corkern/held`.
+The same list holds commits whose content this machine never checks out (symlinks, files named
+like corkern's state, Claude Code configuration) — those are fixed on the remote, not accepted.
 """
 from __future__ import annotations
 
@@ -24,9 +26,10 @@ import typer
 from corkern import guard
 from corkern.commands.reminders import fail
 from corkern.commands.signing_cmd import SIGNERS, _ask
-from corkern.config import load_config
+from corkern.config import load_config, repo_state_dir
 
-HELD = ".last-sync-untrusted"
+HELD = "held"                 # in repo_state_dir: "<sha>\t<reason>" per line (hooks/lib.sh ck_hold)
+UNTRUSTED = "not signed by a device this machine trusts"
 
 
 @dataclass(frozen=True)
@@ -40,11 +43,21 @@ class Signer:
 
 
 def trust_file(repo: Path) -> Path:
-    return repo / ".git" / "corkern" / "trusted_signers"
+    return repo_state_dir(repo) / "trusted_signers"
 
 
 def accepted_file(repo: Path) -> Path:
-    return repo / ".git" / "corkern" / "accepted"
+    return repo_state_dir(repo) / "accepted"
+
+
+def held_entries(repo: Path) -> list[tuple[str, str]]:
+    """(commit or "ERROR", reason) for everything the last pull held back."""
+    entries = []
+    for line in (guard.read_shared(repo_state_dir(repo) / HELD) or "").splitlines():
+        sha, _, reason = line.partition("\t")
+        if sha.strip():
+            entries.append((sha.strip(), reason.strip() or UNTRUSTED))
+    return entries
 
 
 def parse_signers(text: str) -> list[Signer]:
@@ -105,8 +118,8 @@ def _own_signer(repo: Path) -> Signer | None:
 
 
 def _held(repo: Path) -> list[str]:
-    path = repo / HELD
-    return [s for s in guard.read_text(path).split() if s] if path.is_file() else []
+    """Held-back commits `--accept` can integrate: only those held for their signature."""
+    return list(dict.fromkeys(sha for sha, reason in held_entries(repo) if reason == UNTRUSTED))
 
 
 def _describe_commit(repo: Path, sha: str, known: dict[str, str]) -> list[str]:
@@ -132,7 +145,8 @@ def _show(repo: Path) -> None:
     names = {fps[s.key]: s.comment or s.principal for s in listed}
 
     if not trust_file(repo).is_file():
-        typer.echo("Pull verification: OFF — memories from any device that can push are integrated.")
+        typer.echo("Pull verification: OFF — memories from any device that can push are integrated\n"
+                   "  (content this machine never checks out — symlinks, .claude/ … — is held back regardless).")
         typer.echo("  Turn it on with: corkern trust --enable")
     else:
         typer.echo(f"Pull verification: ON — only commits signed by these {len(trusted)} key(s) are integrated:")
@@ -147,6 +161,20 @@ def _show(repo: Path) -> None:
             typer.echo(f"  ? {fps[s.key]}  {s.comment or s.principal}")
         typer.echo("  Compare the fingerprint with `corkern signing --show` on that device, then:\n"
                    "    corkern trust --device <fingerprint>")
+    entries = held_entries(repo)
+    errors = [reason for sha, reason in entries if sha == "ERROR"]
+    content = [(sha, reason) for sha, reason in entries if sha != "ERROR" and reason != UNTRUSTED]
+    if errors:
+        typer.echo(f"\nNothing integrated from the remote: {errors[0]}.\n"
+                   f"  Check: git -C {repo} fetch && git -C {repo} status — the next session start retries.")
+    if content:
+        typer.echo(f"\nHeld back from the remote ({len(content)}): content this machine never checks out:")
+        for sha, reason in content:
+            typer.echo(f"  ✗ {reason}")
+            for row in _describe_commit(repo, sha, names):
+                typer.echo(row)
+        typer.echo("  These cannot be accepted. Remove them on the remote (git rm <path>, commit, push) —\n"
+                   "  everything else is integrated then — and find out who pushed them.")
     held = _held(repo)
     if held:
         typer.echo(f"\nHeld back from the remote ({len(held)} commit(s), not signed by a trusted device):")
@@ -158,7 +186,7 @@ def _show(repo: Path) -> None:
                    "  are gone from the remote, this machine keeps its new memories locally (committed,\n"
                    "  not pushed). To clean up: remove those commits from the remote and revoke the key\n"
                    "  that pushed them (GitHub: Settings → Deploy keys / collaborators).")
-    elif trust_file(repo).is_file():
+    elif trust_file(repo).is_file() and not entries:
         typer.echo("\n  ✓ Nothing held back.")
 
 
@@ -257,7 +285,7 @@ def trust(
             return
         guard.remove_file(trust_file(kr))
         guard.remove_file(accepted_file(kr))
-        guard.remove_file(kr / HELD)
+        guard.remove_file(repo_state_dir(kr) / HELD)
         typer.echo("  ✓ Pull verification is OFF. Turn it on again with: corkern trust --enable")
         return
 

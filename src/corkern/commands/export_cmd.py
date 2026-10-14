@@ -26,7 +26,7 @@ import typer
 from corkern import __version__, guard
 from corkern.commands.reminders import fail
 from corkern.commands.signing_cmd import device_name
-from corkern.config import conf_entries, load_config, repo_format, valid_slug
+from corkern.config import conf_entries, load_config, repo_format, safe_url, valid_slug
 from corkern.export_format import Export, ExportError, read, sha256, write
 
 COMBINABLE = ("MEMORY.md", ".metrics.tsv")
@@ -101,7 +101,7 @@ def export(
         "user": os.environ.get("USER", ""), "home": str(Path.home()), "hostname": socket.gethostname(),
         "knowledge_repo_format": repo_format(kr),
         "repo": {"path": str(kr), "commit": _git(kr, "rev-parse", "HEAD"), "branch": _git(kr, "branch", "--show-current"),
-                 "remote": _git(kr, "remote", "get-url", "origin"), "uncommitted": uncommitted,
+                 "remote": safe_url(_git(kr, "remote", "get-url", "origin")), "uncommitted": uncommitted,
                  "unpushed_commits": int(unpushed) if unpushed.isdigit() else None},
         "projects": [{"slug": s, "resolved": str(p)} for s, p in sorted(projects.items())],
     }

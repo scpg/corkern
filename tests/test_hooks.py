@@ -46,6 +46,13 @@ def hook(name, repo, tmp, foreground=True, extra=None, stdin=PAYLOAD):
                           capture_output=True, text=True, timeout=60)
 
 
+def state(repo, name):
+    """A file in the repo's per-machine sync state (hooks/lib.sh $CK_STATE)."""
+    d = repo / ".git" / "corkern"
+    d.mkdir(parents=True, exist_ok=True)
+    return d / name
+
+
 def write_memory(repo, rel, text="x"):
     p = repo / "memory" / rel
     p.parent.mkdir(parents=True, exist_ok=True)
@@ -112,7 +119,7 @@ class TestCommitMemory:
 
     def test_noop_without_memory_changes(self, world):
         from datetime import datetime
-        (world["a"] / ".last-sync-pull").write_text(datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+        state(world["a"], "last-sync-pull").write_text(datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
         before = git(world["a"], "rev-parse", "HEAD")
         (world["a"] / "corkern.conf").write_text("x:/y\n")  # commit-memory commits memory only
         hook("corkern-commit-memory", world["a"], world["tmp"])
@@ -149,7 +156,7 @@ class TestCommitMemory:
         write_memory(world["b"], "p/b.md", "B")
         git(world["b"], "add", "-A")
         git(world["b"], "commit", "-qm", "b")
-        r = subprocess.run(["bash", "-c", f'. "{ROOT}/src/corkern/hooks/lib.sh"; KR="$1"; ck_push push', "_",
+        r = subprocess.run(["bash", "-c", f'. "{ROOT}/src/corkern/hooks/lib.sh"; export CORKERN_MEMORY_DIR="$1"; ck_init push && ck_push push', "_",
                             str(world["b"])], capture_output=True, text=True,
                            env={**os.environ, "HOME": str(world["tmp"] / "home")})
         assert r.returncode == 0, r.stderr
@@ -171,14 +178,14 @@ class TestCommitMemory:
 
     def test_project_memory_push_is_debounced(self, world):
         from datetime import datetime
-        (world["a"] / ".last-sync-push").write_text(datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+        state(world["a"], "last-sync-push").write_text(datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
         write_memory(world["a"], "p/a.md")
         hook("corkern-commit-memory", world["a"], world["tmp"])
         assert "memory/p/a.md" not in remote_files(world["remote"])  # committed, not yet pushed
         assert git(world["a"], "log", "-1", "--format=%s") == "memory: p/a.md"
 
     def test_project_memory_pushed_when_last_push_is_old(self, world):
-        (world["a"] / ".last-sync-push").write_text("2020-01-01 00:00:00")
+        state(world["a"], "last-sync-push").write_text("2020-01-01 00:00:00")
         write_memory(world["a"], "p/a.md")
         hook("corkern-commit-memory", world["a"], world["tmp"])
         assert "memory/p/a.md" in remote_files(world["remote"])
@@ -208,7 +215,7 @@ class TestTwoDevices:
         hook("corkern-push", world["b"], world["tmp"])  # rejected first → rebase → retry
         files = remote_files(world["remote"])
         assert "memory/p/a.md" in files and "memory/p/b.md" in files
-        assert not (world["b"] / ".last-sync-push-error").exists()
+        assert not state(world["b"], "last-sync-push-error").exists()
 
     def test_conflict_keeps_both_versions_and_syncs(self, world):
         write_memory(world["a"], "p/same.md", "A version\n")
@@ -224,8 +231,8 @@ class TestTwoDevices:
         assert len(copies) == 1 and copies[0].read_text() == "B version\n"  # nothing lost
         files = remote_files(world["remote"])
         assert f"memory/p/{copies[0].name}" in files  # synced, so device A sees it too
-        assert "same.conflict-" in (b / ".last-sync-conflicts").read_text()
-        assert not (b / ".last-sync-push-error").exists()
+        assert "same.conflict-" in state(b, "last-sync-conflicts").read_text()
+        assert not state(b, "last-sync-push-error").exists()
 
     def test_untracked_file_at_incoming_path_does_not_block_pull(self, world):
         # Claude Code creates memory/<slug>/MEMORY.md before SessionStart hooks run
@@ -235,7 +242,7 @@ class TestTwoDevices:
         write_memory(world["b"], "p/MEMORY.md", "# Index\n")
         hook("corkern-pull", world["b"], world["tmp"])
         assert (world["b"] / "memory/p/a.md").read_text() == "from A"
-        assert not (world["b"] / ".last-sync-pull-error").exists()
+        assert not state(world["b"], "last-sync-pull-error").exists()
 
     def test_memory_index_lines_from_both_devices_are_kept(self, world):
         write_memory(world["a"], "p/MEMORY.md", "# Index\n")
@@ -262,7 +269,7 @@ class TestTwoDevices:
         assert git(world["b"], "status", "--porcelain") == ""
 
     def test_pull_flushes_unpushed_commits(self, world):
-        (world["a"] / ".last-sync-push").write_text("2999-01-01 00:00:00")  # debounce: don't push
+        state(world["a"], "last-sync-push").write_text("2999-01-01 00:00:00")  # debounce: don't push
         write_memory(world["a"], "p/late.md")
         hook("corkern-commit-memory", world["a"], world["tmp"])
         assert "memory/p/late.md" not in remote_files(world["remote"])
@@ -276,20 +283,20 @@ class TestFailureModes:
         write_memory(world["a"], "p/x.md")
         assert hook("corkern-push", world["a"], world["tmp"]).returncode == 0
         assert git(world["a"], "log", "-1", "--format=%s") == "auto: memory: p/x.md"
-        assert "no remote" in (world["a"] / ".last-sync-push-error").read_text()
+        assert "no remote" in state(world["a"], "last-sync-push-error").read_text()
 
     def test_unreachable_remote_records_error_quickly(self, world):
         git(world["a"], "remote", "set-url", "origin", str(world["tmp"] / "gone.git"))
         write_memory(world["a"], "p/x.md")
         r = hook("corkern-push", world["a"], world["tmp"])
         assert r.returncode == 0
-        assert "not reachable" in (world["a"] / ".last-sync-push-error").read_text()
+        assert "not reachable" in state(world["a"], "last-sync-push-error").read_text()
 
     def test_success_clears_previous_error(self, world):
-        (world["a"] / ".last-sync-push-error").write_text("old")
+        state(world["a"], "last-sync-push-error").write_text("old")
         write_memory(world["a"], "p/x.md")
         hook("corkern-push", world["a"], world["tmp"])
-        assert not (world["a"] / ".last-sync-push-error").exists()
+        assert not state(world["a"], "last-sync-push-error").exists()
 
     def test_sync_state_files_stay_untracked(self, world):
         write_memory(world["a"], "p/x.md")
@@ -396,7 +403,7 @@ def test_first_push_to_an_empty_remote(tmp_path):
     write_memory(kr, "p/first.md", "first")
     assert hook("corkern-push", kr, tmp_path).returncode == 0
     assert "memory/p/first.md" in remote_files(remote)
-    assert not list(kr.glob(".last-sync-*-error"))
+    assert not list((kr / ".git" / "corkern").glob("last-sync-*-error"))
     assert git(kr, "rev-parse", "--abbrev-ref", "@{upstream}") == "origin/main"
 
 
@@ -417,15 +424,15 @@ def test_clone_without_upstream_tracking_still_pulls(world):
 def test_idle_stop_hook_makes_no_network_call(world):
     from datetime import datetime
     hook("corkern-push", world["b"], world["tmp"])                    # in sync, pull stamped
-    (world["b"] / ".last-sync-pull").write_text(datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+    state(world["b"], "last-sync-pull").write_text(datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
     git(world["b"], "remote", "set-url", "origin", str(world["tmp"] / "gone.git"))
     hook("corkern-push", world["b"], world["tmp"])                    # nothing to do
-    assert not (world["b"] / ".last-sync-push-error").exists()       # remote never contacted
+    assert not state(world["b"], "last-sync-push-error").exists()       # remote never contacted
 
 
 def test_stop_hook_still_pushes_when_ahead(world):
     from datetime import datetime
-    (world["a"] / ".last-sync-pull").write_text(datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+    state(world["a"], "last-sync-pull").write_text(datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
     write_memory(world["a"], "p/x.md", "x")
     hook("corkern-push", world["a"], world["tmp"])
     assert "memory/p/x.md" in remote_files(world["remote"])

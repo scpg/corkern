@@ -16,7 +16,7 @@ from corkern import devices, guard
 from corkern.commands import metrics_cmd
 from corkern.commands.reminders import GLOBAL, format_items, open_items, read_todo
 from corkern.commands.secrets_cmd import log_entries
-from corkern.commands.trust_cmd import HELD
+from corkern.commands.trust_cmd import UNTRUSTED, held_entries
 from corkern.config import conf_entries, load_config, valid_slug
 from corkern.knowledge_repo import repo_symlinks
 from corkern.memory_index import usage
@@ -156,12 +156,15 @@ def _safety_boxes(repo, slug: str | None) -> list[str]:
             *([f"    … and {len(links) - 10} more"] if len(links) > 10 else []),
             "  Tell the user. Do not read or write them; replace them with regular files."],
             f"→ {PROG} status lists them"))
-    held = guard.read_shared(repo.path / HELD)
-    if held is not None:
-        n = len(held.split())
+    entries = held_entries(repo.path)
+    if entries:
+        untrusted = len({sha for sha, reason in entries if reason == UNTRUSTED})
+        reasons = list(dict.fromkeys(reason for sha, reason in entries if reason != UNTRUSTED))
         boxes.append(_box("memories held back", [
-            f"  {n} commit(s) from the remote are not signed by a device this machine trusts,",
-            "  so their memories were NOT loaded. Tell the user; they can review them with:"],
+            "  Nothing new from the remote was loaded this session. Reasons:",
+            *([f"  - {untrusted} commit(s) not signed by a device this machine trusts"] if untrusted else []),
+            *[f"  - {reason}" for reason in reasons[:8]],
+            "  Tell the user; never recreate held content by hand. Review with:"],
             f"→ {PROG} trust"))
     recent = [e for e in log_entries()
               if e[0] >= f"{datetime.now() - timedelta(days=3):%Y-%m-%d %H:%M:%S}"]

@@ -6,6 +6,10 @@ from pathlib import Path
 from corkern import guard
 from corkern.config import CONF_FILE
 
+# Per-machine files that must never be synced, whatever the synced .gitignore says: they go to
+# .git/info/exclude (same list as hooks/lib.sh CK_EXCLUDES — tests check they match)
+MACHINE_LOCAL = ("corkern.conf.local", ".corkern.lock", ".last-sync-*", "*.bak-*", ".distill-prompt.md")
+
 # The knowledge repo's own format version. Every corkern reads it first: a newer one than it
 # knows is refused ("update corkern"), an older one is upgraded step by step (none yet).
 FORMAT_FILE = ".corkern-format"
@@ -103,6 +107,17 @@ def repo_symlinks(repo: Path) -> list[str]:
     return sorted(rel for rel in tracked | set(untracked.split("\0")) if rel and (repo / rel).is_symlink())
 
 
+def harden(repo: Path) -> None:
+    """Defence in depth for a knowledge repo (the hooks repeat it on every run): symlinks are
+    checked out as plain files, per-machine files are excluded locally."""
+    guard.run_git(repo, "config", "--local", "core.symlinks", "false")
+    exclude = repo / ".git" / "info" / "exclude"
+    have = (guard.read_shared(exclude) or "").splitlines()
+    missing = [p for p in MACHINE_LOCAL if p not in have]
+    if missing:
+        guard.append_text(exclude, "".join(p + "\n" for p in missing))
+
+
 def require_dir_or_absent(target: Path) -> None:
     """The target and its nearest existing ancestor must be directories (or not exist)."""
     for candidate in (target, *target.parents):
@@ -142,6 +157,7 @@ def init_repo(path: Path) -> bool:
             guard.write_text(target / rel, content)
     if not (target / ".git").exists():
         guard.run_git(target, "init", "-q", "-b", "main")
+    harden(target)
     guard.run_git(target, "add", "--", *TEMPLATE)
     guard.run_git(target, "commit", "-q", "-m", INITIAL_COMMIT_MSG)
     return True

@@ -83,6 +83,32 @@ for d in $alpha; do
         grep -qx 'head-has-after-attack 1' "$RES/$d-result.txt"
 done
 
+section "the hooks never act through what the intruder pushed (symlinks, state names, .claude/)"
+attack2=$(cat $SHARED/attack2-sha 2>/dev/null)
+assert "the intruder pushed links + HEAD..@{upstream} + .claude/settings.json + .mcp.json" \
+    bash -c "git -C $SHARED/alpha.git ls-tree -r main | grep -q '^120000 .*\.corkern\.lock$' \
+             && git -C $SHARED/alpha.git ls-tree --name-only main | grep -qx 'HEAD..@{upstream}' \
+             && git -C $SHARED/alpha.git ls-tree -r --name-only main | grep -qx '.claude/settings.json'"
+for d in $legit; do
+    r="$RES/$d-result.txt"
+    if grep -qx 'victims unchanged' "$r" && ! grep -qE '^(pwned|link-in-worktree)' "$r" \
+        && grep -qx 'symlinks-setting false' "$r"; then
+        ok "$d: ~/.bashrc and ~/.ssh/authorized_keys untouched, nothing ran, core.symlinks=false"
+    else
+        bad "$d"; sed 's/^/     │ /' "$r"
+    fi
+done
+for d in $alpha; do
+    h="$RES/$d-held.txt"
+    if grep -qF "$attack2" "$h" && grep -q 'symlink: .corkern.lock' "$h" && grep -q 'symlink: memory/alpha-shared/notes.md' "$h" \
+        && grep -q 'Claude Code configuration: .claude/settings.json' "$h" && grep -q 'Claude Code configuration: .mcp.json' "$h" \
+        && in_out "$d-status.txt" "content this machine never checks out" && in_out "$d-context.txt" "Claude Code configuration"; then
+        ok "$d: the attack commit is held with its reasons; status and session context name them"
+    else
+        bad "$d"; sed 's/^/     │ /' "$h"
+    fi
+done
+
 section "no lost writes, convergence"
 for repo in alpha beta gus; do
     hist=$(git -C "$SHARED/$repo.git" log -p -m --all --format=)

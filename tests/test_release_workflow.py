@@ -17,6 +17,14 @@ GATE = (WORKFLOWS / "release-gate.yml").read_text()
 CI = (WORKFLOWS / "ci.yml").read_text()
 
 PUBLISH_JOBS = {"publish-testpypi": "testpypi", "publish-pypi": "pypi"}
+NEEDS = {"publish-testpypi": "[check, gate, build]", "publish-pypi": "[check, gate, build, publish-testpypi]"}
+# publish-pypi's `if:`: a skipped need (publish-testpypi of a final version) skips the job unless
+# the condition has a status function; `!cancelled()` plus explicit results keeps "never publish
+# after a failed check / gate / build / TestPyPI upload" (always() would publish after a failure)
+PYPI_ALL_OF = ["!cancelled()"] + [f"needs.{job}.result == 'success'" for job in ("check", "gate", "build")]
+STATUS_FUNCTION = re.compile(r"\b(always|cancelled|success|failure)\(\)")
+PYPI_PRERELEASE = "(needs.check.outputs.prerelease == 'true' && needs.publish-testpypi.result == 'success')"
+PYPI_FINAL = "(needs.check.outputs.prerelease == 'false' && needs.publish-testpypi.result == 'skipped')"
 PINNED_USES = re.compile(r"uses: [\w.-]+/[\w./-]+@[0-9a-f]{40} # v\d+(\.\d+)*$")
 
 
@@ -73,6 +81,64 @@ def permissions(job: str) -> dict[str, str]:
     return None
 
 
+def job_if(job: str) -> str:
+    """The job's `if:` condition, whitespace collapsed (inline or a `>-` block scalar)."""
+    lines = job.splitlines()
+    for n, line in enumerate(lines):
+        match = re.fullmatch(r"    if:\s*(.*)", line)
+        if not match:
+            continue
+        if match.group(1) not in (">-", ">", "|", "|-"):
+            return match.group(1).strip()
+        body = []
+        for entry in lines[n + 1:]:
+            if entry.strip() and len(entry) - len(entry.lstrip()) <= 4:
+                break
+            body.append(entry)
+        return " ".join(" ".join(body).split())
+    return ""
+
+
+def top_level(expr: str, op: str) -> list[str]:
+    """`expr` split on `op` outside parentheses, each part stripped."""
+    parts, depth, start, i = [], 0, 0, 0
+    while i < len(expr):
+        if expr[i] == "(":
+            depth += 1
+        elif expr[i] == ")":
+            depth -= 1
+        elif depth == 0 and expr.startswith(op, i):
+            parts.append(expr[start:i].strip())
+            start = i = i + len(op)
+            continue
+        i += 1
+    return parts + [expr[start:].strip()]
+
+
+def pypi_if_problems(cond: str) -> list[str]:
+    """publish-pypi runs only after check, gate and build succeeded, and for a pre-release only
+    after the TestPyPI upload succeeded; never with always()."""
+    found = []
+    terms = top_level(cond, " && ")
+    status = [t for t in terms if STATUS_FUNCTION.search(t)]
+    if "always()" in cond or status != ["!cancelled()"]:
+        found.append("pypi-if:not-cancelled")
+    for job in ("check", "gate", "build"):
+        if f"needs.{job}.result == 'success'" not in terms:
+            found.append(f"pypi-if:{job}-success")
+    branches = [t for t in terms if t not in PYPI_ALL_OF and t not in status]
+    either = top_level(branches[0][1:-1], " || ") if len(branches) == 1 and branches[0].startswith("(") \
+        and branches[0].endswith(")") else []
+    if len(either) != 2 or any(t.count("(") != t.count(")") for t in either):
+        found.append("pypi-if:branches")
+        return found
+    if either[0] != PYPI_PRERELEASE:
+        found.append("pypi-if:prerelease-after-testpypi")
+    if either[1] != PYPI_FINAL:
+        found.append("pypi-if:final-without-testpypi")
+    return found
+
+
 def problems(release: str, gate: str) -> list[str]:
     """Every broken rule in release.yml / release-gate.yml, as a short label."""
     found = []
@@ -127,7 +193,7 @@ def problems(release: str, gate: str) -> list[str]:
         found.append("build-needs")
     for name, env in PUBLISH_JOBS.items():
         job = rjobs[name]
-        if "needs: [check, gate, build]" not in job:
+        if not re.search(rf"^    needs: {re.escape(NEEDS[name])}$", job, re.MULTILINE):
             found.append(f"needs:{name}")
         if f"environment:\n      name: {env}" not in job:
             found.append(f"environment:{name}")
@@ -138,10 +204,10 @@ def problems(release: str, gate: str) -> list[str]:
     if "if: needs.check.outputs.prerelease == 'true'" not in rjobs["publish-testpypi"] \
             or "repository-url: https://test.pypi.org/legacy/" not in rjobs["publish-testpypi"]:
         found.append("testpypi-target")
-    if "if: needs.check.outputs.prerelease == 'false'" not in rjobs["publish-pypi"] \
-            or "repository-url: https://upload.pypi.org/legacy/" not in rjobs["publish-pypi"] \
+    if "repository-url: https://upload.pypi.org/legacy/" not in rjobs["publish-pypi"] \
             or "test.pypi.org" in rjobs["publish-pypi"]:
         found.append("pypi-target")
+    found += pypi_if_problems(job_if(rjobs["publish-pypi"]))
     # the gate is reusable and only reusable
     if "\non:\n  workflow_call:\n" not in gate or gate.count("\n  push:") or gate.count("\n  pull_request"):
         found.append("gate-trigger")
@@ -182,16 +248,45 @@ MUTATIONS = [
     ("build", "release", "      - name: Release gate on the files that will be published\n        run: .venv/bin/python scripts/release_gate.py dist\n", ""),
     ("build", "release", "      - name: dist holds exactly", "      - run: uv build -o dist\n      - name: dist holds exactly"),
     ("build-needs", "release", "  build:\n    needs: check\n", "  build:\n"),
-    ("needs:publish-pypi", "release", "  publish-pypi:\n    needs: [check, gate, build]", "  publish-pypi:\n    needs: [check, build]"),
+    ("needs:publish-pypi", "release", "  publish-pypi:\n    needs: [check, gate, build, publish-testpypi]",
+     "  publish-pypi:\n    needs: [check, build, publish-testpypi]"),
     ("environment:publish-testpypi", "release", "      name: testpypi\n", "      name: pypi\n"),
     ("rebuild:publish-testpypi", "release", "    steps:\n      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2",
      "    steps:\n      - run: uv build -o dist"),
     ("publish:publish-testpypi", "release", "attestations: true", "attestations: false"),
     ("testpypi-target", "release", "if: needs.check.outputs.prerelease == 'true'", "if: always()"),
-    ("pypi-target", "release", "if: needs.check.outputs.prerelease == 'false'", "if: needs.check.outputs.prerelease != 'banana'"),
     ("pypi-target", "release", "repository-url: https://upload.pypi.org/legacy/", "repository-url: https://test.pypi.org/legacy/"),
     ("gate-trigger", "gate", "  workflow_call:\n", "  workflow_call:\n  push:\n"),
 ]
+
+
+# publish-pypi: a pre-release reaches pypi.org only after TestPyPI, a final version without it;
+# each mutation breaks exactly one rule
+PYPI = "  publish-pypi:\n"
+PYPI_MUTATIONS = [
+    ("needs:publish-pypi", "needs: [check, gate, build, publish-testpypi]", "needs: [check, gate, build]"),
+    ("pypi-if:not-cancelled", "      !cancelled()\n", "      always()\n"),
+    ("pypi-if:not-cancelled", "      !cancelled()\n", "      !cancelled()\n      && always()\n"),
+    ("pypi-if:check-success", "needs.check.result == 'success' && ", ""),
+    ("pypi-if:gate-success", " && needs.gate.result == 'success'", ""),
+    ("pypi-if:build-success", "      && needs.build.result == 'success'\n", ""),
+    ("pypi-if:prerelease-after-testpypi", "'true'  && needs.publish-testpypi.result == 'success')", "'true')"),
+    ("pypi-if:prerelease-after-testpypi", "'true'  && needs.publish-testpypi.result == 'success')",
+     "'true'  && needs.publish-testpypi.result != 'failure')"),
+    ("pypi-if:final-without-testpypi", "needs.publish-testpypi.result == 'skipped'",
+     "needs.publish-testpypi.result != 'success'"),
+    ("pypi-if:branches", "       || (needs.check.outputs.prerelease == 'false'", "       || true || (needs.check.outputs.prerelease == 'false'"),
+    ("environment:publish-pypi", "      name: pypi        #", "      name: testpypi        #"),
+    ("pypi-target", "repository-url: https://upload.pypi.org/legacy/", "repository-url: https://test.pypi.org/legacy/"),
+    ("pypi-target", "url: https://pypi.org/project/corkern/", "url: https://test.pypi.org/project/corkern/"),
+]
+
+
+@pytest.mark.parametrize("rule, old, new", PYPI_MUTATIONS, ids=[f"{m[0]}-{n}" for n, m in enumerate(PYPI_MUTATIONS)])
+def test_each_publish_pypi_rule_catches_exactly_its_mutation(rule, old, new):
+    head, job = RELEASE.split(PYPI, 1)
+    assert old in job, old
+    assert problems(head + PYPI + job.replace(old, new, 1), GATE) == [rule]
 
 
 @pytest.mark.parametrize("rule, target, old, new", MUTATIONS, ids=[f"{m[0]}-{n}" for n, m in enumerate(MUTATIONS)])

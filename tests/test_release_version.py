@@ -184,3 +184,14 @@ def test_cli_tag_off_branch_fails(monkeypatch, capsys):
     monkeypatch.setattr(crv, "tag_on_branch", lambda tag, branch: (False, "tag 'v' is not on origin/main"))
     assert crv.main(["tag", "--tag", f"v{crv.read_pyproject_version()}", "--branch", "origin/main"]) == 1
     assert "is not on origin/main" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("version, kind", [("2.0.0rc1", "pre-release (TestPyPI, then PyPI after approval)"),
+                                           ("2.0.0", "final (PyPI)")])
+def test_cli_tag_prints_where_the_release_goes(version, kind, monkeypatch, capsys):
+    monkeypatch.setattr(crv, "read_pyproject_version", lambda: version)
+    monkeypatch.setattr(crv, "read_package_version", lambda: version)
+    monkeypatch.setattr(crv, "tag_on_branch", lambda tag, branch: (True, ""))
+    monkeypatch.delenv("GITHUB_OUTPUT", raising=False)
+    assert crv.main(["tag", "--tag", f"v{version}", "--branch", "origin/main"]) == 0
+    assert capsys.readouterr().out == f"corkern {version}: {kind}, tag v{version} is on origin/main\n"

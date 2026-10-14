@@ -5,7 +5,7 @@ name: Release
 #   gate   → the same release gate as CI (release-gate.yml)
 #   build  → sdist + wheel built ONCE, gated, uploaded as an artifact; these files are published
 #   publish-testpypi → pre-releases (a, b, rc, dev) only, environment `testpypi`
-#   publish-pypi     → final versions only, environment `pypi` (required reviewer once the repo is public)
+#   publish-pypi     → final versions only, environment `pypi` (waits for a required reviewer)
 # Trusted Publishing (OIDC) only: no secrets, no tokens. Third-party actions pinned by commit SHA.
 on:
   push:
@@ -106,7 +106,7 @@ jobs:
     if: needs.check.outputs.prerelease == 'false'
     runs-on: ubuntu-latest
     environment:
-      name: pypi        # required reviewer once the repo is public: docs/releasing.md
+      name: pypi        # required reviewer: waits for manual approval
       url: https://pypi.org/project/corkern/${{ needs.check.outputs.version }}/
     permissions:
       id-token: write   # Trusted Publishing; nothing else

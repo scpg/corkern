@@ -8,7 +8,7 @@ A release is a pushed tag `v<version>`. `.github/workflows/release.yml` does the
 | `gate` | the same release gate as CI (`release-gate.yml`, see [release-gate.md](release-gate.md)) |
 | `build` | `uv build` **once**; `check_release_version.py dist` (exactly `corkern-<version>.tar.gz` + `corkern-<version>-py3-none-any.whl`); `release_gate.py` on exactly those files; SHA-256 sums in the job summary; uploads them as the artifact `dist`. These files are published; nothing is rebuilt later. |
 | `publish-testpypi` | pre-releases only; environment `testpypi`; publishes the artifact to test.pypi.org |
-| `publish-pypi` | final versions only; environment `pypi`; publishes the artifact to pypi.org. While the repository is private it does **not** wait for approval (see [One-time setup](#one-time-setup-owner)) |
+| `publish-pypi` | final versions only; environment `pypi`, which **waits for the owner's approval** (required reviewer); publishes the artifact to pypi.org |
 
 Both publish jobs need `check`, `gate` and `build`, have only `id-token: write`, and use Trusted
 Publishing (OIDC): there is no token or secret anywhere. Each upload carries PEP 740
@@ -48,13 +48,10 @@ TestPyPI first, release an `rc` of it.
 
    `--extra-index-url` is there for the dependencies (typer, rich), which are not on TestPyPI.
 
-4. **Final version → PyPI.** Bump to e.g. `2.0.0` (step 1), tag `v2.0.0` (step 2).
-   - **While the repository is private:** pushing the tag *is* the approval; `publish-pypi`
-     uploads to pypi.org as soon as `check`, `gate` and `build` pass. Release the same code as
-     an `rc` to TestPyPI first and verify it (step 3) before you push a final tag.
-   - **Once the repository is public and `pypi` has a required reviewer:** the run stops at
-     `publish-pypi` with *Waiting for review*: compare the SHA-256 sums in the `build` summary,
-     then *Review deployments → pypi → Approve and deploy*.
+4. **Final version → PyPI.** Bump to e.g. `2.0.0` (step 1), tag `v2.0.0` (step 2). Release the
+   same code as an `rc` to TestPyPI first and verify it (step 3). The run stops at
+   `publish-pypi` with *Waiting for review*: compare the SHA-256 sums in the `build` summary,
+   then *Review deployments → pypi → Approve and deploy*. Nothing reaches pypi.org before that.
 
 ### When something fails
 
@@ -75,25 +72,20 @@ To do in GitHub, *Settings → Environments*:
 
 - **`testpypi`**: *Deployment branches and tags* → *Selected branches and tags* → add a **tag**
   rule `v*`. No secrets.
-- **`pypi`**: the same tag rule `v*`; no secrets.
+- **`pypi`**: the same tag rule `v*`; *Required reviewers* → add yourself (leave *Prevent
+  self-review* off while you are the only reviewer) → *Save protection rules*; no secrets. This is
+  the manual approval before anything reaches pypi.org.
 
 *Settings → Rules → Rulesets → New ruleset → New tag ruleset*: name `release tags`, enforcement
 *Active*, target pattern `v*`, *Restrict creations*, *Restrict updates*, *Restrict deletions*,
 bypass list *Repository admin*. Only the owner can then create, move or delete a release tag.
 
-### Manual approval before pypi.org
+### What protects a release
 
-GitHub offers *Required reviewers* on environments of a **private** repository only on the
-Enterprise plan: the option does not appear on `pypi` while `scpg/corkern` is private (owner's
-decision 2026-10-13: accept this until the repository is public). Until then the protections
-before pypi.org are: only the owner can push a `v*` tag (ruleset), the tag must be on `main`
-and match the version (`check`), the release gate (`gate`, `build`), and the `rc` on TestPyPI
-first.
-
-When the repository is public: *Settings → Environments → `pypi`* → tick *Required reviewers*
-→ add yourself (leave *Prevent self-review* off while you are the only reviewer) → *Save
-protection rules*. No workflow change is needed: `publish-pypi` already uses the `pypi`
-environment and will wait for the approval.
+Only the owner can create, move or delete a `v*` tag (ruleset); the tag must be on `main` and
+match the version (`check`); the release gate runs on the exact files (`gate`, `build`); a final
+version waits for the owner's approval in the `pypi` environment. (On a private repository GitHub
+offers required reviewers only on the Enterprise plan; this repository is public.)
 
 If branch protection on `main` requires the status check `release-gate`, update it: the job now
 calls a reusable workflow, so its check is reported as `release-gate / release-gate`.

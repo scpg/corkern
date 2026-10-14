@@ -18,6 +18,7 @@ like corkern's state, Claude Code configuration) — those are fixed on the remo
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -30,6 +31,8 @@ from corkern.config import load_config, repo_state_dir
 
 HELD = "held"                 # in repo_state_dir: "<sha>\t<reason>" per line (hooks/lib.sh ck_hold)
 UNTRUSTED = "not signed by a device this machine trusts"
+ERROR = "ERROR"               # sentinel line: the pull could not inspect the incoming commits
+COMMIT_ID = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
 
 
 @dataclass(frozen=True)
@@ -50,14 +53,24 @@ def accepted_file(repo: Path) -> Path:
     return repo_state_dir(repo) / "accepted"
 
 
-def held_entries(repo: Path) -> list[tuple[str, str]]:
-    """(commit or "ERROR", reason) for everything the last pull held back."""
-    entries = []
+def _held_lines(repo: Path) -> list[tuple[str, str]]:
+    out = []
     for line in (guard.read_shared(repo_state_dir(repo) / HELD) or "").splitlines():
         sha, _, reason = line.partition("\t")
         if sha.strip():
-            entries.append((sha.strip(), reason.strip() or UNTRUSTED))
-    return entries
+            out.append((sha.strip(), reason.strip() or UNTRUSTED))
+    return out
+
+
+def held_entries(repo: Path) -> list[tuple[str, str]]:
+    """(commit id or ERROR, reason) for everything the last pull held back. Entries are data:
+    anything that is not a full commit id (or the ERROR sentinel) is dropped — see held_malformed."""
+    return [(sha, reason) for sha, reason in _held_lines(repo) if sha == ERROR or COMMIT_ID.fullmatch(sha)]
+
+
+def held_malformed(repo: Path) -> int:
+    """How many lines of the held list were ignored (not a commit id)."""
+    return sum(1 for sha, _ in _held_lines(repo) if not (sha == ERROR or COMMIT_ID.fullmatch(sha)))
 
 
 def parse_signers(text: str) -> list[Signer]:
@@ -122,19 +135,42 @@ def _held(repo: Path) -> list[str]:
     return list(dict.fromkeys(sha for sha, reason in held_entries(repo) if reason == UNTRUSTED))
 
 
-def _describe_commit(repo: Path, sha: str, known: dict[str, str]) -> list[str]:
-    head = _git(repo, "log", "-1", "--date=short", "--format=%h  %ad  %an  %s", sha)
-    signed = _git(repo, "-c", f"gpg.ssh.allowedSignersFile={repo / SIGNERS}", "-c",
-                  "gpg.ssh.program=ssh-keygen", "log", "-1", "--format=%G?|%GK", sha)
-    status, _, key_fp = signed.partition("|")
-    if status == "N" or not key_fp:
+def _signature_kind(repo: Path, sha: str) -> str | None:
+    """"SSH", "OpenPGP", "X.509" (or another kind) from the commit's gpgsig header; None if unsigned."""
+    raw = _git(repo, "show", "-s", "--format=raw", "--end-of-options", sha, "--")
+    header = next((line for line in raw.splitlines() if line.startswith("gpgsig")), None)
+    if header is None:
+        return None
+    return "SSH" if "SSH SIGNATURE" in header else "OpenPGP" if "PGP SIGNATURE" in header \
+        else "X.509" if "SIGNED MESSAGE" in header else "an unknown kind of"
+
+
+def _describe_commit(repo: Path, sha: str, trusted: dict[str, str], claimed: dict[str, str]) -> list[str]:
+    """Two lines about a held commit. `trusted`: fingerprint → name from this machine's trust store;
+    `claimed`: fingerprint → name some device wrote into the synced allowed_signers (unverified)."""
+    head = _git(repo, "log", "-1", "--date=short", "--format=%h  %ad  %an  %s", "--end-of-options", sha, "--")
+    # only SSH, only against this machine's trust store (same settings as hooks/lib.sh)
+    signed = _git(repo, "-c", f"gpg.ssh.allowedSignersFile={trust_file(repo)}", "-c", "gpg.ssh.program=ssh-keygen",
+                  "-c", "gpg.openpgp.program=false", "-c", "gpg.x509.program=false",
+                  "log", "-1", "--format=%G?|%GK|%P", "--end-of-options", sha, "--")
+    status, key_fp, parents = (signed.split("|") + ["", "", ""])[:3]
+    kind = _signature_kind(repo, sha)
+    if kind is None:
         who = "unsigned"
+    elif kind != "SSH":
+        who = f"signed with {kind} signature — not an SSH signature, never accepted"
+    elif status == "G" and key_fp in trusted:
+        who = f"signed by {key_fp} ({trusted[key_fp]})"
     else:
-        name = known.get(key_fp, "unknown key — not one of your trusted devices")
-        who = f"signed by {key_fp} ({name})"
-    files = _git(repo, "diff-tree", "--no-commit-id", "--name-only", "-r", sha).splitlines()
+        label = f"{claimed[key_fp]} (claimed, unverified)" if key_fp in claimed else "no name"
+        who = f"signed by {key_fp or 'an unreadable key'} ({label}) — unknown key, not one of your trusted devices"
+    n = len(parents.split())
+    what = "root commit; " if n == 0 else f"merge of {n} parents; " if n > 1 else ""
+    # -m --root: a merge against each parent, a root commit against nothing — what it really changes
+    files = list(dict.fromkeys(_git(repo, "diff-tree", "-r", "--root", "-m", "--name-only", "--no-commit-id",
+                                    "--end-of-options", sha, "--").splitlines()))
     shown = ", ".join(files[:4]) + (f" … +{len(files) - 4}" if len(files) > 4 else "")
-    return [f"    {head}", f"      {who}; files: {shown or '-'}"]
+    return [f"    {head}", f"      {what}{who}; files: {shown or 'none (same tree as its parent)'}"]
 
 
 def _show(repo: Path) -> None:
@@ -142,7 +178,9 @@ def _show(repo: Path) -> None:
     listed = _listed(repo)
     own = _own_signer(repo)
     fps = {s.key: fingerprint(repo, s.key) for s in {*trusted, *listed, *([own] if own else [])}}
-    names = {fps[s.key]: s.comment or s.principal for s in listed}
+    # names only from this machine's trust store; what the synced listing says is a claim
+    names = {fps[s.key]: s.comment or s.principal for s in trusted}
+    claimed = {fps[s.key]: s.comment or s.principal for s in listed if fps[s.key] not in names}
 
     if not trust_file(repo).is_file():
         typer.echo("Pull verification: OFF — memories from any device that can push are integrated\n"
@@ -171,7 +209,7 @@ def _show(repo: Path) -> None:
         typer.echo(f"\nHeld back from the remote ({len(content)}): content this machine never checks out:")
         for sha, reason in content:
             typer.echo(f"  ✗ {reason}")
-            for row in _describe_commit(repo, sha, names):
+            for row in _describe_commit(repo, sha, names, claimed):
                 typer.echo(row)
         typer.echo("  These cannot be accepted. Remove them on the remote (git rm <path>, commit, push) —\n"
                    "  everything else is integrated then — and find out who pushed them.")
@@ -179,7 +217,7 @@ def _show(repo: Path) -> None:
     if held:
         typer.echo(f"\nHeld back from the remote ({len(held)} commit(s), not signed by a trusted device):")
         for sha in held:
-            for row in _describe_commit(repo, sha, names):
+            for row in _describe_commit(repo, sha, names, claimed):
                 typer.echo(row)
         typer.echo("  If they are fine: corkern trust --accept all   (or trust their device: --device)\n"
                    "  If not: leave them — nothing from them reaches this machine's memory. Until they\n"
@@ -188,6 +226,10 @@ def _show(repo: Path) -> None:
                    "  that pushed them (GitHub: Settings → Deploy keys / collaborators).")
     elif trust_file(repo).is_file() and not entries:
         typer.echo("\n  ✓ Nothing held back.")
+    bad = held_malformed(repo)
+    if bad:
+        typer.echo(f"\n  ! {bad} malformed entry ignored in {repo_state_dir(repo) / HELD} (not a commit id) — "
+                   "the next pull rewrites the list")
 
 
 def _add_trusted(repo: Path, signer: Signer) -> None:
@@ -256,6 +298,8 @@ def trust(
         return
 
     if accept:
+        if accept != "all" and not re.fullmatch(r"[0-9a-f]{4,64}", accept):
+            fail(f"{accept!r} is not a commit id — use a hex commit id (see: corkern trust) or 'all'.")
         held = _held(kr)
         if not held:
             fail("Nothing is held back.")
@@ -264,7 +308,7 @@ def trust(
             fail(f"{accept} is not a held-back commit — see: corkern trust")
         typer.echo("  Accept these commits into this machine's memory?")
         for sha in chosen:
-            for row in _describe_commit(kr, sha, {}):
+            for row in _describe_commit(kr, sha, {}, {}):
                 typer.echo(row)
         if not _ask("  [y/N] ", yes):
             typer.echo("  Nothing changed.")

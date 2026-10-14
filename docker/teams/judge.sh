@@ -109,6 +109,18 @@ for d in $alpha; do
     fi
 done
 
+attack3=$(cat $SHARED/attack3-sha 2>/dev/null)
+assert "the intruder pushed an OpenPGP-signed commit" \
+    bash -c "git -C $SHARED/alpha.git cat-file commit $attack3 | grep -q 'BEGIN PGP SIGNATURE'"
+for d in $alpha; do
+    if ! grep -q '^pgp-poison' "$RES/$d-result.txt" && grep -qF "$attack3" "$RES/$d-held.txt" \
+        && in_out "$d-trust.txt" "not an SSH signature"; then
+        ok "$d: OpenPGP-signed commit held; corkern trust says it is not an SSH signature"
+    else
+        bad "$d"; grep -F "$attack3" "$RES/$d-held.txt" | sed 's/^/     │ /'
+    fi
+done
+
 section "no lost writes, convergence"
 for repo in alpha beta gus; do
     hist=$(git -C "$SHARED/$repo.git" log -p -m --all --format=)

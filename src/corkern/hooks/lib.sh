@@ -128,7 +128,7 @@ ck_memory_dirty() {
 # ── Secrets never leave the machine ────────────────────────────────────────────────────
 # Same pre-filter as src/corkern/secret_scan.py HINT (tests check they match): a staged file
 # without any of these words cannot hold a secret, so Python is only started when needed.
-CK_SECRET_HINT='PRIVATE KEY|gh[pousr]_|github_pat_|sk-|AKIA|ASIA|xox[abprs]-|AIza|glpat-|npm_|passw|pwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key'
+CK_SECRET_HINT='PRIVATE KEY|gh[pousr]_|github_pat_|sk-|AKIA|ASIA|xox[abprs]-|AIza|GOCSPX-|glpat-|npm_|passw|pwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key'
 
 ck_bin() {  # path of the corkern v2 CLI (never v1's `corkern` link into its repo), or nothing
     local b

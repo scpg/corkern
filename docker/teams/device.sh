@@ -159,7 +159,7 @@ for r in $(seq "$ROUNDS"); do
             corkern remind "rotate the CI token $s before Friday" "$DEV" >> "$LOG" 2>&1 ;;
         7)  s="sk-ant-api03-$(rnd 'A-Za-z0-9_-' 48)"; plant "$s"
             printf '# Global instructions\nexport ANTHROPIC_API_KEY=%s\n' "$s" >> "$KR/global/CLAUDE.md" ;;
-        8)  s="GOCSPX-$(rnd 'A-Za-z0-9' 28)"; plant "$s"
+        8)  s="GOCSPX-$(rnd 'A-Za-z' 28)"; plant "$s"   # no digit on purpose: only the dedicated rule catches it
             printf '{"installed": {"client_id": "123.apps", "client_secret": "%s"}}\n' "$s" > "$M/$DEV/credentials.json" ;;
         9)  s="xoxb-$(rnd '0-9' 12)-$(rnd 'A-Za-z0-9' 24)"; plant "$s"
             echo "- [Slack bot]($DEV-slack.md) token $s" >> "$M/$REPO-shared/MEMORY.md" ;;   # union-merged file

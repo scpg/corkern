@@ -25,6 +25,9 @@ SAMPLES = {
     "private-key": "-----BEGIN OPENSSH " + "PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAA\n-----END OPENSSH "
                    + "PRIVATE KEY-----",
     "assigned-credential": "DB_PASSWORD=" + "hunter2Secret99",
+    # a Google OAuth client secret WITHOUT any digit: the generic assignment rule needs a digit,
+    # so only the dedicated pattern catches it (found by the teams simulation, CI 2026-10-14)
+    "google-oauth-secret": '{"installed": {"client_secret": "' + "GOCSPX-" + "abcdefghijklmnopqrstuvwxyzAB" + '"}}',
 }
 HARMLESS = [
     "token: GH_TOKEN_TESTING (only via tmp.local/gh-test)",
@@ -56,6 +59,13 @@ def test_harmless_text_is_left_alone(text):
 def test_assignment_keeps_the_key_name():
     out, _ = redact("db_password: 'Tr0ub4dor&3xyz'\n")
     assert out == "db_password: '" + MARKER.format(kind="assigned-credential") + "'\n"
+
+
+def test_google_oauth_secret_without_a_key_name():
+    """No 'secret' word nearby: the bash pre-filter (HINT) must still let it through to Python."""
+    text = "oauth for the CLI: " + "GOCSPX-" + "ABCDEFGHIJKLMNOPQRSTUVWXYZab" + "\n"
+    assert [h.kind for h in scan(text)] == ["google-oauth-secret"]
+    assert re.search(HINT, text, re.I)
 
 
 def test_hint_prefilter_catches_every_sample():

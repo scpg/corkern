@@ -26,6 +26,8 @@ def record(repo: MemoryRepo, slug: str, ai_text: str) -> None:
     row = (f"{datetime.now():%Y-%m-%d %H:%M:%S}\t{socket.gethostname()}\t{slug}\t{len(files)}"
            f"\t{mem_bytes}\t{ai_bytes}\t{ai_bytes * 100 // CONTEXT_BYTES}\n")
     path = repo.path / ".metrics.tsv"
+    if path.is_symlink():          # never written through a synced link (listed by status)
+        return
     if not path.is_file():
         guard.write_text(path, HEADER)
     guard.append_text(path, row)
@@ -42,9 +44,8 @@ def _human(n: int, mb: bool = True) -> str:
 def metrics() -> None:
     """Memory corpus size, context pressure, and growth trends."""
     repo, _ = load_config()
-    path = repo.path / ".metrics.tsv"
-    rows = [line.split("\t") for line in guard.read_text(path).split("\n")[1:] if line] \
-        if path.is_file() else []
+    text = guard.read_shared(repo.path / ".metrics.tsv")
+    rows = [line.split("\t") for line in text.split("\n")[1:] if line] if text else []
     if not rows:
         typer.echo("  No metrics yet. Metrics are collected automatically on each session start.")
         return

@@ -16,6 +16,17 @@ SLUG_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 _WINDOWS_ABS = re.compile(r"[A-Za-z]:")
 # Everything str.splitlines() treats as a line boundary — never allowed inside a stored value
 LINE_BREAKS = "\n\r\v\f\x1c\x1d\x1e\x85\u2028\u2029"
+# A project path is printed into manifests, Claude's context and shell snippets: never shell code
+SHELL_META = "$`\\;|&<>"
+
+
+def unsafe_path_text(text: str) -> str | None:
+    """Why a project path is refused: control characters or shell metacharacters (spaces are fine)."""
+    if any(ord(c) < 0x20 or ord(c) == 0x7f or c in LINE_BREAKS for c in text):
+        return "contains a control character"
+    if any(c in SHELL_META for c in text):
+        return "contains a shell metacharacter ($ ` \\ ; | & < >)"
+    return None
 
 
 class UnstorablePath(ValueError):
@@ -65,6 +76,8 @@ def store_project_path(path: Path) -> str:
     text = str(path)
     if any(c in text for c in LINE_BREAKS):
         raise UnstorablePath("contains a line break")
+    if unsafe_path_text(text):
+        raise UnstorablePath(unsafe_path_text(text))
     if text != text.strip():
         raise UnstorablePath("has leading or trailing whitespace")
     for home in (Path.home(), Path.home().resolve()):  # HOME may be a symlink
@@ -83,8 +96,13 @@ class MemoryRepo:
 
     def __init__(self, path: Path) -> None:
         self._path = guard.assert_safe(path)
-        # Checked separately: memory/ may be a symlink pointing somewhere else
-        self._memory_dir = guard.assert_safe(self._path / MEMORY_SUBDIR)
+        guard.set_knowledge_repo(path)    # nothing below it is reached through a symlink
+        # Checked separately: a memory/ symlinked into v1 is refused outright; one pointing
+        # anywhere else is treated as absent (listing returns nothing, see guard)
+        try:
+            self._memory_dir = guard.assert_safe(self._path / MEMORY_SUBDIR)
+        except guard.SymlinkInRepoError:
+            self._memory_dir = self._path / MEMORY_SUBDIR
 
     @property
     def path(self) -> Path:
@@ -97,6 +115,10 @@ class MemoryRepo:
     @property
     def conf_file(self) -> Path:
         return self._path / CONF_FILE
+
+    def read_conf(self) -> str:
+        """corkern.conf's text; a symlinked corkern.conf counts as empty (see repo_symlinks)."""
+        return guard.read_shared(self.conf_file) or ""
 
     def slugs(self) -> list[str]:
         return guard.list_dirs(self._memory_dir)
@@ -160,7 +182,8 @@ def load_config() -> tuple[MemoryRepo, dict[str, Path]]:
     memory_dir = guard.assert_safe(memory_dir_env)
     if not memory_dir.is_dir():
         raise SystemExit(f"ERROR: the knowledge repo {memory_dir} does not exist.")
-    if not (memory_dir / CONF_FILE).is_file():
+    conf = memory_dir / CONF_FILE
+    if not (conf.is_file() or conf.is_symlink()):     # a symlinked one is read as empty
         raise SystemExit(
             f"ERROR: {memory_dir} is not a corkern v2 knowledge repo (no {CONF_FILE})."
         )
@@ -172,10 +195,10 @@ def load_config() -> tuple[MemoryRepo, dict[str, Path]]:
 
 def repo_format(repo_path: Path) -> int | None:
     """The knowledge repo's format version (None: no marker — repos made before markers)."""
-    marker = repo_path / ".corkern-format"
-    if not marker.is_file():
+    text = guard.read_shared(repo_path / ".corkern-format")
+    if text is None:
         return None
-    for line in guard.read_text(marker).splitlines():
+    for line in text.splitlines():
         key, _, value = line.partition("=")
         if key.strip() == "knowledge_repo_format" and value.strip().isdigit():
             return int(value.strip())
@@ -201,15 +224,20 @@ def _parse_conf(text: str, source: str) -> dict[str, Path]:
         if slug in entries:
             continue
         path = resolve_project_path(raw_path)
-        if path is not None:
-            entries[slug] = path
+        if path is None:
+            continue
+        unsafe = unsafe_path_text(raw_path)
+        if unsafe:
+            print(f"warning: {source}: skipping {slug!r}: its path {unsafe}", file=sys.stderr)
+            continue
+        entries[slug] = path
     return entries
 
 
 def _load_projects(repo_path: Path) -> dict[str, Path]:
     projects: dict[str, Path] = {}
     for name in (CONF_FILE, LOCAL_CONF_FILE):  # local overrides
-        conf_file = repo_path / name
-        if conf_file.is_file():
-            projects.update(_parse_conf(guard.read_text(conf_file), name))
+        text = guard.read_shared(repo_path / name)       # a symlinked one counts as absent
+        if text is not None:
+            projects.update(_parse_conf(text, name))
     return projects

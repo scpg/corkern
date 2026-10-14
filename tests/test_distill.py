@@ -33,9 +33,11 @@ def env(tmp_path):
     (stub / "claude").write_text(STUB)
     (stub / "claude").chmod(0o755)
     log = tmp_path / "claude.log"
+    (tmp_path / "home").mkdir()
     e = {**os.environ, "CORKERN_MEMORY_DIR": str(kr), "CLAUDE_LOG": str(log),
-         "PATH": f"{stub}:{os.environ['PATH']}"}
-    return {"kr": kr, "env": e, "log": log}
+         "PATH": f"{stub}:{os.environ['PATH']}", "HOME": str(tmp_path / "home"),
+         "XDG_STATE_HOME": str(tmp_path / "state")}
+    return {"kr": kr, "env": e, "log": log, "prompt": tmp_path / "state" / "corkern" / ".distill-prompt.md"}
 
 
 def run(env, *args, **extra):
@@ -70,9 +72,10 @@ def test_failed_run_keeps_previous_synthesis(env, flag):
     assert synthesis(env).read_text() == "previous synthesis"     # v1 truncated it
 
 
-def test_prompt_file_is_never_committed(env):
+def test_prompt_file_is_private_and_outside_the_repo(env):
     run(env, "--auto")
-    assert (env["kr"] / ".distill-prompt.md").exists()
+    assert env["prompt"].is_file() and env["prompt"].stat().st_mode & 0o777 == 0o600
+    assert not (env["kr"] / ".distill-prompt.md").exists()
     untracked = subprocess.run(["git", "-C", str(env["kr"]), "status", "--porcelain"],
                                capture_output=True, text=True).stdout
     assert ".distill-prompt.md" not in untracked
@@ -81,7 +84,7 @@ def test_prompt_file_is_never_committed(env):
 def test_interactive_opens_claude_with_prompt(env):
     r = run(env)
     assert r.returncode == 0
-    assert f"args=--append-system-prompt-file {env['kr'] / '.distill-prompt.md'}" in env["log"].read_text()
+    assert f"args=--append-system-prompt-file {env['prompt']}" in env["log"].read_text()
 
 
 def test_auto_without_claude(env):

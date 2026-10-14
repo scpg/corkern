@@ -51,7 +51,7 @@ def read_all(repo: MemoryRepo) -> dict[str, dict[str, tuple[str, str]]]:
 
 def ordered_slugs(repo: MemoryRepo, projects: dict[str, Path]) -> list[str]:
     """Registry order (corkern.conf), then slugs only defined in corkern.conf.local."""
-    order = list(dict.fromkeys(s for s, _ in conf_entries(guard.read_text(repo.conf_file))
+    order = list(dict.fromkeys(s for s, _ in conf_entries(repo.read_conf())
                                if valid_slug(s) and s in projects))
     return order + sorted(s for s in projects if s not in order)
 
@@ -60,13 +60,15 @@ def update(repo: MemoryRepo, projects: dict[str, Path], touch: str | None = None
     """Rewrite this device's manifest from the registry, keeping last-seen stamps."""
     me = device_name()
     path = repo.path / DIR / me
-    previous = parse(guard.read_text(path)) if path.is_file() else {}
+    if path.is_symlink():          # a synced link would make us write wherever it points
+        guard.remove_symlink(path)
+    previous = parse(guard.read_shared(path) or "")
     now = f"{datetime.now():%Y-%m-%d %H:%M:%S}"
     lines = ["# corkern device manifest — auto-generated", "# format: slug:last-seen:path", f"host:{me}"]
     for slug in ordered_slugs(repo, projects):
         stamp = now if slug == touch else (previous.get(slug, ("", ""))[0] or now)
         lines.append(f"{slug}:{stamp}:{projects[slug]}")
     content = "\n".join(lines) + "\n"
-    if not path.is_file() or guard.read_text(path) != content:
+    if guard.read_shared(path) != content:
         guard.write_text(path, content)
     return path

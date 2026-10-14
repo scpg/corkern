@@ -17,6 +17,12 @@ with symlinks resolved — matches one of:
 so overriding HOME cannot hide the real v1 repo. Loosening any rule is a deliberate
 code change, to be made only after v2 UAT.
 
+Inside a knowledge repo (registered by config.MemoryRepo), a path is also refused when any
+component below the repo root is a symlink, or when it resolves outside the root
+(SymlinkInRepoError): the repo is shared, and a synced symlink can point at any file on this
+machine. The root itself may be a symlink. Listing skips such links, read_shared treats them as
+absent, and writes open with O_NOFOLLOW, so a link swapped in after the check is not followed.
+
 Two narrow exceptions:
 - `init-device`: Claude Code's user `settings.json`, `CLAUDE.md` and corkern's own slash
   commands (`commands/corkern-*.md`) in $CLAUDE_CONFIG_DIR or ~/.claude may be read and written
@@ -28,6 +34,7 @@ Two narrow exceptions:
 """
 from __future__ import annotations
 
+import errno
 import os
 import pwd
 import subprocess
@@ -40,6 +47,10 @@ _V1_REGISTRY = "projects.conf"
 
 class V1ProtectedError(SystemExit):
     """Hard stop. Subclasses SystemExit so `except Exception` cannot swallow it."""
+
+
+class SymlinkInRepoError(V1ProtectedError):
+    """A path inside the knowledge repo goes through a symlink (never followed)."""
 
 
 class GitError(RuntimeError):
@@ -85,8 +96,48 @@ def _refusal_reason(path: Path, roots: set[Path]) -> str | None:
     return None
 
 
+# Knowledge repo roots: (path as given, resolved). Paths below them never go through a symlink.
+_repo_roots: set[tuple[Path, Path]] = set()
+
+
+def set_knowledge_repo(path: Path | str) -> None:
+    raw = Path(os.path.abspath(Path(path).expanduser()))
+    _repo_roots.add((raw, raw.resolve()))
+
+
+def _repo_symlink(raw: Path, resolved: Path) -> str | None:
+    """Why `raw` may not be used: it goes through a symlink below a knowledge repo root, or
+    resolves outside it. None for paths outside every knowledge repo."""
+    for spelled, root in _repo_roots:
+        base = next((b for b in (spelled, root) if raw != b and raw.is_relative_to(b)), None)
+        if base is not None:
+            probe, rest = base, raw.relative_to(base).parts
+        elif resolved != root and resolved.is_relative_to(root):
+            # reached through a link outside the repo (e.g. ~/.corkern-link/memory): find where
+            # the path enters the repo, then check every component after that
+            probe, rest = Path(raw.anchor), raw.parts[1:]
+            while rest and not (probe.resolve() == root or probe.resolve().is_relative_to(root)):
+                probe, rest = probe / rest[0], rest[1:]
+        else:
+            continue
+        for part in rest:
+            probe = probe / part
+            if probe.is_symlink():
+                return f"{probe} is a symlink inside the knowledge repo {root}"
+        if not resolved.is_relative_to(root):
+            return f"it resolves outside the knowledge repo {root}"
+    return None
+
+
+def symlink_reason(path: Path | str) -> str | None:
+    """Why `path` would be refused as going through a symlink in the knowledge repo, if it would."""
+    raw = Path(os.path.abspath(Path(path).expanduser()))
+    return _repo_symlink(raw, raw.resolve())
+
+
 def assert_safe(path: Path | str) -> Path:
-    """Return the resolved path, or raise V1ProtectedError if it touches v1."""
+    """Return the resolved path, or raise V1ProtectedError if it touches v1
+    (SymlinkInRepoError if it goes through a symlink inside the knowledge repo)."""
     raw = Path(os.path.abspath(Path(path).expanduser()))
     resolved = raw.resolve()
     roots = _protected_roots()
@@ -97,6 +148,12 @@ def assert_safe(path: Path | str) -> Path:
                 f"ERROR: {path} is v1-protected ({reason}).\n"
                 "Set CORKERN_MEMORY_DIR to a test knowledge repo and retry."
             )
+    reason = _repo_symlink(raw, resolved)
+    if reason:
+        raise SymlinkInRepoError(
+            f"ERROR: {path} not used: {reason}.\n"
+            "corkern never follows symlinks in the knowledge repo — a synced link can point at any "
+            "file on this machine. Replace it with a regular file or remove it (corkern status lists them).")
     return resolved
 
 
@@ -224,14 +281,43 @@ def list_claude_commands() -> list[str]:
     return sorted(f.name for f in folder.iterdir() if f.name.startswith("corkern-") and f.suffix == ".md")
 
 
+_WRITE = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+
+
+def _open(target: Path, flags: int, mode: str, perms: int = 0o666):
+    """open() that never follows a symlink as the last component (ELOOP instead) — closes the
+    gap between assert_safe and the open."""
+    return os.fdopen(os.open(target, flags | os.O_NOFOLLOW, perms), mode)
+
+
 def read_text(path: Path) -> str:
-    return assert_safe(path).read_text()
+    with _open(assert_safe(path), os.O_RDONLY, "r") as f:
+        return f.read()
+
+
+def read_shared(path: Path) -> str | None:
+    """A synced file's text, or None when it is missing, not a regular file, or reached through a
+    symlink in the knowledge repo — such a link is treated as absent, never followed and never an
+    error (one teammate's link must not break everyone's corkern)."""
+    try:
+        target = assert_safe(path)
+        if not target.is_file():
+            return None
+        with _open(target, os.O_RDONLY, "r") as f:
+            return f.read()
+    except SymlinkInRepoError:
+        return None
+    except OSError as e:
+        if e.errno == errno.ELOOP:          # swapped for a link after the check
+            return None
+        raise
 
 
 def write_text(path: Path, content: str) -> None:
     target = assert_safe(path)
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(content)
+    with _open(target, _WRITE, "w") as f:
+        f.write(content)
 
 
 def write_private(path: Path, content: str) -> None:
@@ -239,10 +325,19 @@ def write_private(path: Path, content: str) -> None:
     out of the knowledge repo."""
     target = assert_safe(path)
     target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w") as f:
+    with _open(target, _WRITE, "w", 0o600) as f:
         f.write(content)
     os.chmod(target, 0o600)
+
+
+def remove_symlink(path: Path) -> None:
+    """Remove a symlink inside the knowledge repo — the link only, never what it points at —
+    so a regular file can take its place. Anything that is not such a link is left alone."""
+    raw = Path(os.path.abspath(Path(path).expanduser()))
+    assert_safe(raw.parent)                  # no symlink on the way to the link itself
+    inside = any(raw.parent.resolve().is_relative_to(root) for _, root in _repo_roots)
+    if inside and raw.is_symlink():
+        raw.unlink()
 
 
 def remove_file(path: Path) -> None:
@@ -255,7 +350,8 @@ def remove_file(path: Path) -> None:
 def write_bytes(path: Path, content: bytes) -> None:
     target = assert_safe(path)
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_bytes(content)
+    with _open(target, _WRITE, "wb") as f:
+        f.write(content)
 
 
 def read_tar(path: Path) -> tuple[dict[str, bytes], list[str]]:
@@ -311,17 +407,28 @@ def write_tar_private(path: Path, members: list[tuple[str, bytes]]) -> None:
 def append_text(path: Path, content: str) -> None:
     target = assert_safe(path)
     target.parent.mkdir(parents=True, exist_ok=True)
-    with target.open("a") as f:
+    with _open(target, os.O_WRONLY | os.O_CREAT | os.O_APPEND, "a") as f:
         f.write(content)
 
 
+def _listable(path: Path) -> Path | None:
+    """The folder to list, or None when it is missing or reached through a symlink in the
+    knowledge repo (listing treats such a link as absent)."""
+    try:
+        target = assert_safe(path)
+    except SymlinkInRepoError:
+        return None
+    return target if target.is_dir() else None
+
+
 def list_files(path: Path, suffix: str = "") -> list[tuple[str, float]]:
-    """(name, mtime) of non-hidden regular files ending in `suffix`, newest first."""
-    target = assert_safe(path)
-    if not target.is_dir():
+    """(name, mtime) of non-hidden regular files ending in `suffix`, newest first. Symlinks are
+    skipped, never followed."""
+    target = _listable(path)
+    if target is None:
         return []
     files = [(f.name, f.stat().st_mtime) for f in target.iterdir()
-             if f.is_file() and not f.name.startswith(".") and f.name.endswith(suffix)]
+             if not f.is_symlink() and f.is_file() and not f.name.startswith(".") and f.name.endswith(suffix)]
     return sorted(files, key=lambda item: item[1], reverse=True)
 
 
@@ -347,11 +454,12 @@ def run_git(repo: Path, *args: str, timeout: float | None = None) -> subprocess.
 
 
 def list_dirs(path: Path) -> list[str]:
-    """Names of non-hidden subdirectories, sorted."""
-    target = assert_safe(path)
-    if not target.is_dir():
+    """Names of non-hidden subdirectories, sorted (symlinks skipped)."""
+    target = _listable(path)
+    if target is None:
         return []
-    return sorted(d.name for d in target.iterdir() if d.is_dir() and not d.name.startswith("."))
+    return sorted(d.name for d in target.iterdir()
+                  if not d.is_symlink() and d.is_dir() and not d.name.startswith("."))
 
 
 def which(tool: str) -> str | None:
@@ -397,20 +505,28 @@ def exec_tool(argv: list[str], cwd: Path | None = None) -> None:
 
 
 def move(src: Path, dst: Path) -> None:
-    """Rename src → dst; both sides must pass the guard, and dst must not exist."""
+    """Rename src → dst; both sides must pass the guard, neither may be a symlink (a link would
+    move or replace what it points at), and dst must not exist."""
+    for side in (src, dst):
+        if Path(os.path.abspath(side)).is_symlink():
+            raise SymlinkInRepoError(f"ERROR: {side} is a symlink — not moved (corkern never follows "
+                                     "symlinks in the knowledge repo).")
     source, target = assert_safe(src), assert_safe(dst)
-    if target.exists():
+    if os.path.lexists(target):
         raise FileExistsError(target)
     target.parent.mkdir(parents=True, exist_ok=True)
     source.rename(target)
 
 
 def walk_files(path: Path, suffix: str = "") -> list[Path]:
-    """All regular files below `path` ending in `suffix`, sorted (C order like v1's sort)."""
-    target = assert_safe(path)
-    if not target.is_dir():
+    """All regular files below `path` ending in `suffix`, sorted (C order like v1's sort).
+    Symlinks — to files or to folders — are skipped, never followed."""
+    target = _listable(path)
+    if target is None:
         return []
-    return sorted((f for f in target.rglob(f"*{suffix}") if f.is_file()), key=lambda p: str(p).encode())
+    found = [Path(folder) / name for folder, _, names in os.walk(target)   # followlinks=False
+             for name in names if name.endswith(suffix)]
+    return sorted((f for f in found if not f.is_symlink() and f.is_file()), key=lambda p: str(p).encode())
 
 
 def read_bytes(path: Path) -> bytes:

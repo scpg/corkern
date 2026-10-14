@@ -18,6 +18,7 @@ from corkern.commands.reminders import GLOBAL, format_items, open_items, read_to
 from corkern.commands.secrets_cmd import log_entries
 from corkern.commands.trust_cmd import HELD
 from corkern.config import conf_entries, load_config, valid_slug
+from corkern.knowledge_repo import repo_symlinks
 from corkern.memory_index import usage
 
 PROG = "corkern"
@@ -26,7 +27,7 @@ PROG = "corkern"
 def instructions_text() -> str:
     repo, _ = load_config()
     rows = []
-    for slug, raw in conf_entries(guard.read_text(repo.conf_file)):
+    for slug, raw in conf_entries(repo.read_conf()):
         if valid_slug(slug):
             rows.append(f"- `{slug}` → {raw.strip() or '~ (home)'}")
     projects = "\n".join(rows) or "- (none yet)"
@@ -146,9 +147,18 @@ def _safety_boxes(repo, slug: str | None) -> list[str]:
     """Things the user must know at session start: held-back commits, removed secrets,
     an index Claude Code no longer loads completely."""
     boxes = []
-    held = repo.path / HELD
-    if held.is_file():
-        n = len(guard.read_text(held).split())
+    links = repo_symlinks(repo.path)
+    if links:
+        boxes.append(_box("symlinks in the knowledge repo — held/ignored", [
+            "  These synced files are symlinks; corkern never follows them and treats them",
+            "  as absent (a link can point at any file on this machine):",
+            *[f"    {rel}" for rel in links[:10]],
+            *([f"    … and {len(links) - 10} more"] if len(links) > 10 else []),
+            "  Tell the user. Do not read or write them; replace them with regular files."],
+            f"→ {PROG} status lists them"))
+    held = guard.read_shared(repo.path / HELD)
+    if held is not None:
+        n = len(held.split())
         boxes.append(_box("memories held back", [
             f"  {n} commit(s) from the remote are not signed by a device this machine trusts,",
             "  so their memories were NOT loaded. Tell the user; they can review them with:"],
@@ -161,9 +171,9 @@ def _safety_boxes(repo, slug: str | None) -> list[str]:
             "  A secret was written into a memory and replaced by a marker before syncing:",
             *rows, "  Tell the user, and do not write secrets into memory files."],
             f"→ originals stay on this machine: {PROG} secrets"))
-    index = repo.memory_dir / slug / "MEMORY.md" if slug else None
-    if index and index.is_file():
-        u = usage(guard.read_text(index))
+    index = guard.read_shared(repo.memory_dir / slug / "MEMORY.md") if slug else None
+    if index is not None:
+        u = usage(index)
         if u.over or u.near:
             state = "OVER" if u.over else "close to"
             boxes.append(_box(f"MEMORY.md {state} Claude Code's read limit [{slug}]", [
@@ -192,12 +202,12 @@ def session_context() -> None:
     text = instructions_text()
     try:
         devices.update(repo, projects, touch=slug)  # this device's manifest: last seen here
-    except OSError:
+    except (OSError, guard.SymlinkInRepoError):
         pass                                       # never break session start
     if slug:
         try:
             metrics_cmd.record(repo, slug, text)
-        except OSError:
+        except (OSError, guard.SymlinkInRepoError):
             pass                                   # metrics must never break session start
     parts = [text, *_safety_boxes(repo, slug)]
     for s in [GLOBAL] + ([slug] if slug and slug != GLOBAL else []):

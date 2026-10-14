@@ -89,6 +89,20 @@ class InitError(Exception):
     pass
 
 
+def repo_symlinks(repo: Path) -> list[str]:
+    """Repo-relative paths of symlinks in the knowledge repo (tracked, or untracked and not
+    ignored). corkern never follows them and treats them as absent; status and session-context
+    list them so the user can remove them."""
+    try:
+        staged = guard.run_git(repo, "ls-files", "-s", "-z").stdout
+        untracked = guard.run_git(repo, "ls-files", "-o", "--exclude-standard", "-z").stdout
+    except guard.GitError:
+        return []
+    tracked = {entry.split("\t", 1)[1] for entry in staged.split("\0") if entry.startswith("120000 ")}
+    # still a link on disk (a manifest corkern replaced by a regular file is no longer one)
+    return sorted(rel for rel in tracked | set(untracked.split("\0")) if rel and (repo / rel).is_symlink())
+
+
 def require_dir_or_absent(target: Path) -> None:
     """The target and its nearest existing ancestor must be directories (or not exist)."""
     for candidate in (target, *target.parents):

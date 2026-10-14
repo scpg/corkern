@@ -56,6 +56,13 @@ def isolated_git(tmp_path_factory, monkeypatch):
     monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
 
 
+@pytest.fixture(autouse=True)
+def isolated_knowledge_repo_roots(monkeypatch):
+    """Each test starts with no registered knowledge repo (the guard keeps them per process)."""
+    from corkern import guard
+    monkeypatch.setattr(guard, "_repo_roots", set())
+
+
 @pytest.fixture
 def test_repo(tmp_path: Path) -> Path:
     """A minimal corkern knowledge repo (spec layout) with two projects."""

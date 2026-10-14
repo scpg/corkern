@@ -63,6 +63,9 @@ that, itself or via any ancestor, as given or symlink-resolved: contains the sen
 `~/.local/bin/corkern` (for both `$HOME` and the passwd home). External tools only via
 `guard.run_tool/capture_tool/exec_tool` with an allow-list (graphify, claude, code-review-graph).
 The hooks carry the same guard in bash (`hooks/lib.sh` `ck_is_v1`, parity-tested).
+Inside the knowledge repo (registered by `MemoryRepo`) no path may go through a symlink below the
+root (the root itself may be one): explicit actions raise `SymlinkInRepoError`, listing skips links,
+`guard.read_shared` treats a symlinked shared file as absent; status/session-context list them.
 Loosening a guard rule is a deliberate, reviewed change (e.g. `init-device` may write `~/.claude/`,
 but only through `read/write_claude_config` and never while v1 is installed).
 

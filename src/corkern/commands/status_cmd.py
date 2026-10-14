@@ -52,7 +52,8 @@ def _git(repo: Path, *args: str, timeout: float = 10) -> str | None:
 
 
 def _read(path: Path) -> str | None:
-    return guard.read_text(path).strip() if path.is_file() else None
+    text = guard.read_shared(path)              # a symlinked file counts as absent
+    return text.strip() if text is not None else None
 
 
 def _sync_checks(r: Report, kr: Path) -> None:
@@ -114,6 +115,14 @@ def _repo_checks(r: Report, kr: Path) -> None:
                f"> {kr}/.corkern-format")
     else:
         r.ok(f"Format: knowledge repo format {fmt}")
+    from corkern.knowledge_repo import repo_symlinks
+    links = repo_symlinks(kr)
+    if links:
+        r.warn(f"{len(links)} symlink(s) in the knowledge repo — held/ignored: corkern never follows "
+               "them and treats them as absent (a synced link can point at any file on this machine). "
+               "Replace them with regular files or remove them (git rm):")
+        for rel in links:
+            r.info(f"    {rel}")
     ignore = _read(kr / ".gitignore") or ""
     for pattern in ("corkern.conf.local", ".last-sync-*", ".corkern.lock", ".distill-prompt.md"):
         if pattern not in ignore:
@@ -171,11 +180,11 @@ def _index_checks(r: Report, repo) -> None:
     r.header("Memory indexes (Claude Code loads the first 200 lines / 25 KB of MEMORY.md)")
     checked = 0
     for slug in repo.slugs():
-        index = repo.memory_dir / slug / "MEMORY.md"
-        if not index.is_file():
+        index = guard.read_shared(repo.memory_dir / slug / "MEMORY.md")
+        if index is None:
             continue
         checked += 1
-        u = usage(guard.read_text(index))
+        u = usage(index)
         if u.over:
             r.warn(f"{slug}: {u.describe()} — entries past the limit are NOT loaded. Shorten it: one "
                    "line per entry, details in topic files (corkern memory-prune / distill help)")

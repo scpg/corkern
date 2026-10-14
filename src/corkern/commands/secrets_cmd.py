@@ -32,6 +32,10 @@ def quarantine_dir() -> Path:
 
 
 def _read(path: Path) -> str | None:
+    """The file's text, or None: binary, over 2 MB, or a symlink in the knowledge repo (never
+    followed — redacting it would rewrite whatever it points at)."""
+    if guard.symlink_reason(path) or path.is_symlink():
+        return None
     if not path.is_file() or path.stat().st_size > MAX_BYTES:
         return None
     try:
@@ -52,7 +56,7 @@ def redact_files(repo_path: Path, names: list[str]) -> tuple[list[str], list[str
             continue
         text = _read(path)
         if text is None:
-            if path.is_file():
+            if path.is_file() or path.is_symlink():
                 held.append(str(path.relative_to(repo_path)))
             continue
         new, hits = redact(text)

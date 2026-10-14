@@ -52,7 +52,8 @@ def todo_path(repo: MemoryRepo, slug: str) -> Path:
 
 def read_todo(repo: MemoryRepo, slug: str) -> list[str] | None:
     path = todo_path(repo, slug)
-    return guard.read_text(path).split("\n") if path.is_file() else None
+    text = guard.read_shared(path)                # a symlinked todo.md counts as absent
+    return text.split("\n") if text is not None else None
 
 
 def open_items(lines: list[str]) -> list[tuple[str | None, str]]:

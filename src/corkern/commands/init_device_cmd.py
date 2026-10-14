@@ -217,6 +217,11 @@ def _settings_plan(kr: Path) -> ClaudeFile:
 # ── 3. global CLAUDE.md ─────────────────────────────────────────────────────────────────
 def _claude_md_plan(kr: Path) -> ClaudeFile:
     source = kr / "global" / "CLAUDE.md"
+    if source.is_symlink() or source.parent.is_symlink() or guard.symlink_reason(source) \
+            or not source.resolve().is_relative_to(kr.resolve()):
+        # Claude Code would import whatever a synced link points at (an SSH key, a token)
+        return ClaudeFile("CLAUDE.md", "skip", "global/CLAUDE.md is a symlink (or resolves outside the "
+                          "knowledge repo) — not imported; replace it with a regular file")
     if not source.is_file():
         return ClaudeFile("CLAUDE.md", "skip", "no global/CLAUDE.md in the knowledge repo")
     line = "@" + "\\ ".join(_home_relative(source, "~").split(" "))   # spaces need a backslash

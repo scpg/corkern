@@ -9,7 +9,8 @@ Fixes vs v1 distill.sh:
 - no crash after saving (v1 referenced $BRAIN — a variable left over from the tool's old name
   "brain" that is never set — under `set -u`)
 - the project list in the prompt comes from corkern.conf (v1 hard-coded it)
-- the prompt file (a copy of every memory) is gitignored, so hooks never commit it
+- the prompt file (a copy of every memory) is written to this machine's state dir (0600), never
+  into the knowledge repo, where a synced symlink could redirect the write
 """
 from __future__ import annotations
 
@@ -19,7 +20,7 @@ import typer
 
 from corkern import guard
 from corkern.commands.reminders import fail
-from corkern.config import conf_entries, load_config, valid_slug
+from corkern.config import conf_entries, load_config, state_dir, valid_slug
 
 PROMPT_NAME = ".distill-prompt.md"
 
@@ -56,7 +57,7 @@ MEMORY FILES:
 
 
 def build_prompt(repo) -> tuple[str, int]:
-    slugs = list(dict.fromkeys(s for s, _ in conf_entries(guard.read_text(repo.conf_file))
+    slugs = list(dict.fromkeys(s for s, _ in conf_entries(repo.read_conf())
                                if valid_slug(s)))
     files = guard.walk_files(repo.memory_dir, ".md")
     parts = [HEADER.format(projects=", ".join([*slugs, "global"]))]
@@ -73,8 +74,8 @@ def distill(
     repo, _ = load_config()
     typer.echo("=== Corkern Distill ===\n\nCollecting memories...")
     prompt, count = build_prompt(repo)
-    prompt_file = repo.path / PROMPT_NAME
-    guard.write_text(prompt_file, prompt)
+    prompt_file = state_dir() / PROMPT_NAME
+    guard.write_private(prompt_file, prompt)
     typer.echo(f"✓ Collected {count} files ({len(prompt.encode())} bytes).\n")
     claude = guard.which("claude")
     model_args = ["--model", model] if model else []
@@ -94,7 +95,7 @@ def distill(
         typer.echo("  (Committed and synced by the next corkern hook run.)")
         return
 
-    typer.echo(f"Prompt saved: {PROMPT_NAME}\n")
+    typer.echo(f"Prompt saved: {prompt_file}\n")
     if not claude:
         typer.echo(f"Claude CLI not found. To analyse manually, paste {prompt_file} into any Claude session.")
         return

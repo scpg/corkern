@@ -8,14 +8,20 @@ A release is a pushed tag `v<version>`. `.github/workflows/release.yml` does the
 | `gate` | the same release gate as CI (`release-gate.yml`, see [release-gate.md](release-gate.md)) |
 | `build` | `uv build` **once**; `check_release_version.py dist` (exactly `corkern-<version>.tar.gz` + `corkern-<version>-py3-none-any.whl`); `release_gate.py` on exactly those files; SHA-256 sums in the job summary; uploads them as the artifact `dist`. These files are published; nothing is rebuilt later. |
 | `publish-testpypi` | pre-releases only; environment `testpypi`; publishes the artifact to test.pypi.org |
-| `publish-pypi` | final versions only; environment `pypi`, which **waits for the owner's approval** (required reviewer); publishes the artifact to pypi.org |
+| `publish-pypi` | environment `pypi`, which **waits for the owner's approval** (required reviewer); publishes the same artifact to pypi.org. A final version: directly (`publish-testpypi` is skipped). A pre-release: only after `publish-testpypi` succeeded |
 
-Both publish jobs need `check`, `gate` and `build`, have only `id-token: write`, and use Trusted
-Publishing (OIDC): there is no token or secret anywhere. Each upload carries PEP 740
-attestations. Runs for the same tag are queued, never cancelled half-way.
+Both publish jobs need `check`, `gate` and `build` (`publish-pypi` also `publish-testpypi`), have
+only `id-token: write`, and use Trusted Publishing (OIDC): there is no token or secret anywhere.
+Each upload carries PEP 740 attestations. Runs for the same tag are queued, never cancelled
+half-way. `publish-pypi` runs only when `check`, `gate` and `build` succeeded and, for a
+pre-release, the TestPyPI upload succeeded: its condition is `!cancelled()` plus those explicit
+results (a skipped need would otherwise skip it; `always()` would publish after a failure).
 
-A pre-release goes to TestPyPI only and a final version to PyPI only. To try a final version on
-TestPyPI first, release an `rc` of it.
+A pre-release goes to TestPyPI first, then, after the owner's approval, to PyPI; a final version
+goes to PyPI only. Publishing pre-releases to PyPI claims the name `corkern` there before 2.0.0.
+`pip` and `uv` install a pre-release only when asked for it explicitly (`corkern==2.0.0rc1` or
+`--pre`), so `pip install corkern` keeps installing nothing until 2.0.0 exists. To try a final
+version on TestPyPI first, release an `rc` of it.
 
 ## Cut a release
 
@@ -37,9 +43,10 @@ TestPyPI first, release an `rc` of it.
 
    Push only the tag (`git push --tags` pushes every local tag).
 
-3. **Pre-release (`rc`, `a`, `b`, `dev`) → TestPyPI.** Watch the run under *Actions → Release*.
-   The `build` job summary lists the SHA-256 of both files. Then verify the published package
-   in a clean environment:
+3. **Pre-release (`rc`, `a`, `b`, `dev`) → TestPyPI, then PyPI after approval.** Watch the run
+   under *Actions → Release*. The `build` job summary lists the SHA-256 of both files.
+   `publish-testpypi` uploads them to TestPyPI; the run then stops at `publish-pypi` with
+   *Waiting for review*. Verify the package on TestPyPI first, in a clean environment:
 
        uv tool install --index-url https://test.pypi.org/simple/ \
            --extra-index-url https://pypi.org/simple/ corkern==2.0.0rc1
@@ -47,9 +54,16 @@ TestPyPI first, release an `rc` of it.
        uv tool uninstall corkern
 
    `--extra-index-url` is there for the dependencies (typer, rich), which are not on TestPyPI.
+   Then compare the SHA-256 sums in the `build` summary and *Review deployments → pypi →
+   Approve and deploy*: the same files go to pypi.org. Users get the pre-release only when they
+   ask for it (`pip install corkern==2.0.0rc1` or `--pre`).
+
+   **If something is wrong on TestPyPI:** do not approve. Cancel the run (*Cancel workflow*;
+   `publish-pypi` then never runs), fix the cause through a pull request and release `rc2`
+   (steps 1 and 2). TestPyPI never accepts the same file name twice.
 
 4. **Final version → PyPI.** Bump to e.g. `2.0.0` (step 1), tag `v2.0.0` (step 2). Release the
-   same code as an `rc` to TestPyPI first and verify it (step 3). The run stops at
+   same code as an `rc` first and verify it on TestPyPI (step 3). The run stops at
    `publish-pypi` with *Waiting for review*: compare the SHA-256 sums in the `build` summary,
    then *Review deployments → pypi → Approve and deploy*. Nothing reaches pypi.org before that.
 
@@ -83,8 +97,9 @@ bypass list *Repository admin*. Only the owner can then create, move or delete a
 ### What protects a release
 
 Only the owner can create, move or delete a `v*` tag (ruleset); the tag must be on `main` and
-match the version (`check`); the release gate runs on the exact files (`gate`, `build`); a final
-version waits for the owner's approval in the `pypi` environment. (On a private repository GitHub
+match the version (`check`); the release gate runs on the exact files (`gate`, `build`); every upload
+to pypi.org, final or pre-release, waits for the owner's approval in the `pypi` environment, a
+pre-release only after its TestPyPI upload succeeded. (On a private repository GitHub
 offers required reviewers only on the Enterprise plan; this repository is public.)
 
 If branch protection on `main` requires the status check `release-gate`, update it: the job now

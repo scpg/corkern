@@ -10,8 +10,9 @@
      `__version__` in src/corkern/__init__.py,
   4. that version is valid PEP 440 in normalized form, with no local part (+...): PyPI refuses
      local versions, and a normalized version is what `uv build` writes into the file names.
-It prints the version and whether it is a pre-release (a, b, rc or dev: published to TestPyPI
-only; anything else is final: PyPI only), and writes both to $GITHUB_OUTPUT when that is set.
+It prints the version and whether it is a pre-release (a, b, rc or dev: published to TestPyPI,
+then to PyPI after the owner's approval; anything else is final: PyPI only), and writes both to
+$GITHUB_OUTPUT when that is set.
 
 `dist` fails unless the folder holds exactly corkern-<version>.tar.gz and
 corkern-<version>-py3-none-any.whl: the files that will be published, nothing else.
@@ -177,7 +178,7 @@ def main(argv: list[str]) -> int:
         for error in errors:
             print(f"release check: {error}", file=sys.stderr)
         return 1
-    kind = "pre-release (TestPyPI)" if version.prerelease else "final (PyPI)"
+    kind = "pre-release (TestPyPI, then PyPI after approval)" if version.prerelease else "final (PyPI)"
     print(f"corkern {version.text}: {kind}, tag {args.tag} is on {args.branch}")
     write_outputs(version)
     return 0

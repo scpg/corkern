@@ -5,7 +5,10 @@ name: Release
 #   gate   → the same release gate as CI (release-gate.yml)
 #   build  → sdist + wheel built ONCE, gated, uploaded as an artifact; these files are published
 #   publish-testpypi → pre-releases (a, b, rc, dev) only, environment `testpypi`
-#   publish-pypi     → final versions only, environment `pypi` (waits for a required reviewer)
+#   publish-pypi     → environment `pypi` (waits for a required reviewer), the same artifact:
+#                      a final version directly (publish-testpypi skipped), a pre-release only
+#                      after publish-testpypi succeeded; never after a failed check, gate, build
+#                      or TestPyPI upload (`!cancelled()` + explicit results, never always())
 # Trusted Publishing (OIDC) only: no secrets, no tokens. Third-party actions pinned by commit SHA.
 on:
   push:
@@ -102,8 +105,15 @@ jobs:
           attestations: true
 
   publish-pypi:
-    needs: [check, gate, build]
-    if: needs.check.outputs.prerelease == 'false'
+    needs: [check, gate, build, publish-testpypi]
+    # A skipped need (publish-testpypi of a final version) skips the job unless the condition
+    # has a status function: !cancelled() plus the explicit results below.
+    if: >-
+      !cancelled()
+      && needs.check.result == 'success' && needs.gate.result == 'success'
+      && needs.build.result == 'success'
+      && ((needs.check.outputs.prerelease == 'true'  && needs.publish-testpypi.result == 'success')
+       || (needs.check.outputs.prerelease == 'false' && needs.publish-testpypi.result == 'skipped'))
     runs-on: ubuntu-latest
     environment:
       name: pypi        # required reviewer: waits for manual approval

@@ -61,7 +61,8 @@ def test_prompt_has_all_memories_and_registry_projects(env):
     prompt = Path(str(env["log"]) + ".stdin").read_text()
     assert "Projects present: alpha, beta, global" in prompt
     assert "=== memory/alpha/rule.md ===\nalways test" in prompt
-    assert "args=-p --model haiku" in env["log"].read_text()
+    # isolated text-only call: user settings only, no MCP servers, no tools (audit C2)
+    assert "args=-p --setting-sources user --strict-mcp-config --tools  --model haiku" in env["log"].read_text()
 
 
 @pytest.mark.parametrize("flag", ["CLAUDE_FAIL", "CLAUDE_EMPTY"])

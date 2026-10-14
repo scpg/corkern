@@ -43,7 +43,8 @@ def _registered(kr: Path) -> str | None:
     claude = guard.which("claude")
     if not claude:
         return None
-    result = guard.capture_tool(kr, [claude, "mcp", "get", SERVER], "", quiet=True)
+    # user-scope registration: from $HOME, never from the knowledge repo (its .claude/ is shared)
+    result = guard.capture_tool(Path.home(), [claude, "mcp", "get", SERVER], "", quiet=True)
     if result.returncode != 0:
         return None
     return next((line.split(":", 1)[1].strip() for line in (result.stdout or "").splitlines()
@@ -90,9 +91,9 @@ def iwe(
                        f"-e CORKERN_MEMORY_DIR={kr} -- {command}")
             return
         if _registered(kr):
-            guard.run_tool(kr, [claude, "mcp", "remove", SERVER, "--scope", "user"])
+            guard.run_tool(Path.home(), [claude, "mcp", "remove", SERVER, "--scope", "user"])
         # name before -e: -e takes several values (real Claude Code reads "iwe" as one otherwise)
-        if guard.run_tool(kr, [claude, "mcp", "add", SERVER, "--scope", "user", "-e", f"CORKERN_MEMORY_DIR={kr}",
+        if guard.run_tool(Path.home(), [claude, "mcp", "add", SERVER, "--scope", "user", "-e", f"CORKERN_MEMORY_DIR={kr}",
                                "--", _self(), "iwe-serve"]) != 0:
             fail("claude mcp add failed")
         typer.echo(f"  ✓ Registered. Check with: claude mcp list   (tools appear as mcp__{SERVER}__*)")

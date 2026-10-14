@@ -476,6 +476,38 @@ def _allowed(argv: list[str]) -> None:
         raise ValueError(f"{argv[0]} is not an allowed tool")
 
 
+def in_knowledge_repo(path: Path | str) -> bool:
+    """`path` is a knowledge repo or inside one (as given or symlink-resolved)."""
+    raw = Path(os.path.abspath(Path(path).expanduser()))
+    forms = (raw, raw.resolve())
+    return any(f == r or f.is_relative_to(r) for spelled, root in _repo_roots for r in (spelled, root) for f in forms)
+
+
+def _claude_cwd(argv: list[str], cwd: Path | str) -> None:
+    """Claude Code loads .claude/settings.json, .mcp.json and CLAUDE.md from where it starts — in
+    the shared knowledge repo, those are whatever anyone who can push wrote (hooks that run as
+    this user; print mode skips the trust dialog). claude never starts there."""
+    if Path(argv[0]).name == "claude" and in_knowledge_repo(cwd):
+        raise V1ProtectedError(
+            f"ERROR: not starting claude in {cwd}: it is inside the knowledge repo, whose .claude/ settings "
+            "and hooks anyone who can push could have written. Start it from another folder.")
+
+
+def capture_tool_isolated(argv: list[str], stdin: str, quiet: bool = False) -> subprocess.CompletedProcess:
+    """Like capture_tool, from a fresh private empty folder (0700, removed afterwards): nothing the
+    tool would pick up from its working directory — project settings, hooks, MCP servers,
+    CLAUDE.md — exists there."""
+    import shutil
+    import tempfile
+    _allowed(argv)
+    folder = tempfile.mkdtemp(prefix="corkern-claude-")
+    try:
+        return subprocess.run(argv, cwd=folder, input=stdin, stdout=subprocess.PIPE, text=True,
+                              stderr=subprocess.DEVNULL if quiet else None)
+    finally:
+        shutil.rmtree(folder, ignore_errors=True)
+
+
 def run_tool(cwd: Path, argv: list[str], extra_env: dict[str, str] | None = None) -> int:
     """Run an allow-listed external tool in `cwd`, output streamed to the terminal.
 
@@ -484,6 +516,7 @@ def run_tool(cwd: Path, argv: list[str], extra_env: dict[str, str] | None = None
     """
     _allowed(argv)
     target = assert_safe(cwd)
+    _claude_cwd(argv, target)
     return subprocess.run(argv, cwd=target, env={**os.environ, **(extra_env or {})}).returncode
 
 
@@ -491,16 +524,20 @@ def capture_tool(cwd: Path, argv: list[str], stdin: str, quiet: bool = False) ->
     """Run an allow-listed tool with `stdin`, capturing stdout (stderr goes to the terminal,
     or nowhere with quiet=True)."""
     _allowed(argv)
-    return subprocess.run(argv, cwd=assert_safe(cwd), input=stdin, stdout=subprocess.PIPE, text=True,
+    target = assert_safe(cwd)
+    _claude_cwd(argv, target)
+    return subprocess.run(argv, cwd=target, input=stdin, stdout=subprocess.PIPE, text=True,
                           stderr=subprocess.DEVNULL if quiet else None)
 
 
 def exec_tool(argv: list[str], cwd: Path | None = None) -> None:
     """Replace this process with an allow-listed tool (interactive sessions, MCP servers),
-    optionally started in `cwd` (which must pass the v1 guard)."""
+    optionally started in `cwd` (which must pass the v1 guard; claude never in the knowledge repo)."""
     _allowed(argv)
+    target = assert_safe(cwd) if cwd is not None else Path.cwd()
+    _claude_cwd(argv, target)
     if cwd is not None:
-        os.chdir(assert_safe(cwd))
+        os.chdir(target)
     os.execvp(argv[0], argv)
 
 

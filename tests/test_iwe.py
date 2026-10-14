@@ -20,6 +20,7 @@ IWEC = '#!/usr/bin/env bash\necho "iwec cwd=$PWD args=$*"\n'
 
 @pytest.fixture
 def env(tmp_path, monkeypatch):
+    (tmp_path / "home").mkdir()
     kr = tmp_path / "kr"
     assert CliRunner().invoke(app, ["init", str(kr)]).exit_code == 0
     stubs = tmp_path / "bin"

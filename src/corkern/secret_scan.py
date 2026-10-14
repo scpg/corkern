@@ -3,7 +3,7 @@
 Claude writes memories by itself and the hooks push them automatically, so a token Claude
 noted down would otherwise reach the remote (and its history). Two kinds of rules:
 
-- known token formats (GitHub, Anthropic, OpenAI, AWS, Slack, Google, GitLab, npm, private
+- known token formats (GitHub, Anthropic, OpenAI, AWS, Slack, Google API + OAuth, GitLab, npm, private
   key blocks) — redacted wherever they appear
 - `password = …`, `api_key: …` and similar assignments — the value is redacted when it looks
   like a credential (12+ characters, letters and digits, not a path or placeholder)
@@ -26,6 +26,7 @@ KNOWN: list[tuple[str, re.Pattern[str]]] = [
     ("aws-access-key", re.compile(r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b")),
     ("slack-token", re.compile(r"\bxox[abprs]-[A-Za-z0-9-]{10,}")),
     ("google-api-key", re.compile(r"\bAIza[0-9A-Za-z_-]{35}")),
+    ("google-oauth-secret", re.compile(r"\bGOCSPX-[A-Za-z0-9_-]{28}")),
     ("gitlab-token", re.compile(r"\bglpat-[A-Za-z0-9_-]{20,}")),
     ("npm-token", re.compile(r"\bnpm_[A-Za-z0-9]{36}")),
 ]
@@ -40,7 +41,7 @@ ASSIGNMENT = re.compile(
 
 # Pre-filter for the bash hooks (grep -iE): every rule above contains one of these, so a file
 # without any match cannot contain a secret and Python is not started. Kept in sync by tests.
-HINT = (r"PRIVATE KEY|gh[pousr]_|github_pat_|sk-|AKIA|ASIA|xox[abprs]-|AIza|glpat-|npm_"
+HINT = (r"PRIVATE KEY|gh[pousr]_|github_pat_|sk-|AKIA|ASIA|xox[abprs]-|AIza|GOCSPX-|glpat-|npm_"
         r"|passw|pwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key")
 
 

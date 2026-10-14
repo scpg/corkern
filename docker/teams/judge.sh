@@ -35,7 +35,7 @@ assert "key files (id_ed25519) never committed" bash -c "! grep -q 'id_ed25519$'
 assert "unreadable file with a token (screenshot.png) never committed" bash -c "! grep -q 'screenshot.png' <<< \"\$1\"" _ "$names"
 markers=$(grep -c 'secret removed by corkern' <<< "$all_remote")
 assert "redacted memories were synced with markers ($markers marker lines)" test "$markers" -gt 0
-for kind in github-token openai-key aws-access-key assigned-credential private-key anthropic-key slack-token; do
+for kind in github-token openai-key aws-access-key assigned-credential private-key anthropic-key slack-token google-oauth-secret; do
     assert "  marker for $kind reached the remote" grep -qF "secret removed by corkern: $kind" <<< "$all_remote"
 done
 missing_h=0

@@ -1,0 +1,100 @@
+name: CI
+
+# scpg/corkern holds only corkern v2. v1 lives in a separate private repository and is not
+# readable here: parity and migration-script tests run locally only (make test-migration,
+# make test-scenarios with remote v1) until the v1 machines are switched.
+on:
+  push:
+    branches: [main]
+  pull_request:  # any base, so stacked PRs are gated too
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.12"]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          version: "0.11.23"
+      - name: Install
+        run: |
+          uv venv --seed --python ${{ matrix.python-version }}
+          uv pip install -e ".[dev]"
+      - name: Test
+        run: .venv/bin/pytest tests/ -q
+
+  e2e:
+    # Two non-root devices with a realistic fake v1; fingerprints v1 before/after
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Docker end-to-end
+        run: make test-e2e
+
+  multi-device:
+    # 5 device containers syncing concurrently: no lost writes, convergence, never stuck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: 5-device simulation
+        run: ROUNDS=20 make test-multi
+
+  teams:
+    # 10 devices in 3 teams + an intruder: secrets, trust, index limit, init-device, no lost writes
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: 10-device team simulation
+        run: make test-teams
+
+  claude-hooks:
+    # Real Claude Code + v2 hooks, layer 1 only: CI never has the token (.env is local)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Claude Code hook wiring
+        run: make test-claude
+
+  release-gate:
+    # What would be uploaded to (Test)PyPI, checked before any upload exists: docs/release-gate.md.
+    # Every action is pinned by commit SHA, every tool by exact version (+ SHA-256 for binaries).
+    # The steps live in release-gate.yml so release.yml runs exactly the same gate before publishing.
+    permissions:
+      contents: read
+    uses: ./.github/workflows/release-gate.yml
+
+  actionlint:
+    # Lints every workflow (incl. shellcheck of run: blocks when shellcheck is on the runner).
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      ACTIONLINT_VERSION: "1.7.12"
+      ACTIONLINT_SHA256: "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install actionlint (pinned, checksum-verified)
+        run: |
+          mkdir -p "$RUNNER_TEMP/bin"
+          cd "$RUNNER_TEMP"
+          curl -sSfLo actionlint.tar.gz "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          echo "${ACTIONLINT_SHA256}  actionlint.tar.gz" | sha256sum -c -
+          tar xzf actionlint.tar.gz -C bin actionlint
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - name: actionlint
+        run: actionlint -color

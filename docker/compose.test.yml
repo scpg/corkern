@@ -1,0 +1,25 @@
+services:
+  corkern-test:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.test
+    environment:
+      - CORKERN_MEMORY_DIR=/test-memory
+    volumes:
+      - test-memory:/test-memory
+    command: .venv/bin/pytest tests/ -v
+
+  # Extended end-to-end: two non-root "devices", each with a realistic fake v1 install
+  corkern-e2e:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.e2e
+
+  # Real Claude Code + v2 hooks on two fresh devices. Token (if any) only via `run -e`.
+  corkern-claude:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.claude
+
+volumes:
+  test-memory:

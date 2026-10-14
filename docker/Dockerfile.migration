@@ -1,0 +1,13 @@
+# v1 → v2 migration scripts end to end: a REAL v1 (code from origin/main, mounted at run time,
+# wired by its own sync.sh) on "old", a fresh "new" machine, real Claude Code for `claude mcp`.
+FROM ubuntu:24.04
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update -qq && \
+    apt-get install -y -qq git python3 curl ca-certificates jq openssh-client procps >/dev/null && \
+    rm -rf /var/lib/apt/lists/*
+COPY --from=ghcr.io/astral-sh/uv:0.11.23 /uv /uvx /usr/local/bin/
+ARG CLAUDE_VERSION=2.1.285
+RUN for u in old new; do useradd -m -s /bin/bash "$u" && \
+      runuser -u "$u" -- bash -c "curl -fsSL https://claude.ai/install.sh | bash -s $CLAUDE_VERSION" >/dev/null; done
+COPY . /src
+CMD ["bash", "/src/docker/migration/run.sh"]

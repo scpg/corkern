@@ -1,0 +1,6 @@
+# project       knowledge-repo   — real git repos (shared remote per project) every team device clones
+web-app         alpha
+api             alpha
+data-pipeline   beta
+ml-model        beta
+homelab         gus

@@ -1,0 +1,53 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "corkern"
+version = "2.0.0rc1"
+description = "Collective knowledge for Claude Code: syncs its memory across projects, devices and people through a private git repository"
+readme = "PYPI.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "SCPG" }]
+requires-python = ">=3.10"
+keywords = ["claude", "claude-code", "memory", "sync", "git", "knowledge-base", "ai"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development",
+    "Topic :: Utilities",
+]
+dependencies = [
+    "typer>=0.12,<1",
+    "rich>=13,<14",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8,<9",
+    "pytest-cov>=5,<6",
+]
+
+[project.scripts]
+corkern = "corkern.main:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/corkern"]
+
+# The source package holds the code, its licence and the PyPI page, nothing else — never tests, docs, docker, migrate or any
+# untracked folder (reports/, research_notes/, tmp.local/ may hold personal data). Enforced by
+# tests/test_package.py.
+[tool.hatch.build.targets.sdist]
+only-include = ["src/corkern", "pyproject.toml", "PYPI.md", "LICENSE"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

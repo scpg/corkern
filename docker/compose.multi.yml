@@ -1,0 +1,24 @@
+# 5 independent device containers + a judge, sharing one git remote volume.
+#   make test-multi   (ROUNDS=15 by default)
+x-device: &device
+  build:
+    context: ..
+    dockerfile: docker/Dockerfile.e2e
+  volumes:
+    - remote:/remote
+  environment:
+    - ROUNDS=${ROUNDS:-15}
+
+services:
+  dev1: { <<: *device, hostname: dev1, command: bash /src/docker/multi/device.sh 1 }
+  dev2: { <<: *device, hostname: dev2, command: bash /src/docker/multi/device.sh 2 }
+  dev3: { <<: *device, hostname: dev3, command: bash /src/docker/multi/device.sh 3 }
+  dev4: { <<: *device, hostname: dev4, command: bash /src/docker/multi/device.sh 4 }
+  dev5: { <<: *device, hostname: dev5, command: bash /src/docker/multi/device.sh 5 }
+  verify:
+    <<: *device
+    hostname: verify
+    command: bash /src/docker/multi/verify.sh
+
+volumes:
+  remote:

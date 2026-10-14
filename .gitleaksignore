@@ -1,0 +1,3 @@
+# Synthetic test fixtures (tests/test_secrets.py builds fake tokens to test secret_scan).
+76de31c48f90d677f6ad5d091ed4f473adb07217:tests/test_secrets.py:generic-api-key:18
+76de31c48f90d677f6ad5d091ed4f473adb07217:tests/test_secrets.py:generic-api-key:132

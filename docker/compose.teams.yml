@@ -1,0 +1,29 @@
+# 10 device containers in 3 teams/repos (+ an intruder) and a judge, sharing one volume.
+#   make test-teams   (ROUNDS=12 by default)
+x-device: &device
+  build:
+    context: ..
+    dockerfile: docker/Dockerfile.teams
+  volumes:
+    - remote:/remote
+  environment:
+    - ROUNDS=${ROUNDS:-12}
+
+services:
+  ana-laptop:  { <<: *device, hostname: ana-laptop,  command: bash /src/docker/teams/device.sh ana-laptop }
+  ana-desktop: { <<: *device, hostname: ana-desktop, command: bash /src/docker/teams/device.sh ana-desktop }
+  ben:         { <<: *device, hostname: ben,         command: bash /src/docker/teams/device.sh ben }
+  carla:       { <<: *device, hostname: carla,       command: bash /src/docker/teams/device.sh carla }
+  mallory:     { <<: *device, hostname: mallory,     command: bash /src/docker/teams/device.sh mallory }
+  dan:         { <<: *device, hostname: dan,         command: bash /src/docker/teams/device.sh dan }
+  eva:         { <<: *device, hostname: eva,         command: bash /src/docker/teams/device.sh eva }
+  finn:        { <<: *device, hostname: finn,        command: bash /src/docker/teams/device.sh finn }
+  gus-laptop:  { <<: *device, hostname: gus-laptop,  command: bash /src/docker/teams/device.sh gus-laptop }
+  gus-server:  { <<: *device, hostname: gus-server,  command: bash /src/docker/teams/device.sh gus-server }
+  judge:
+    <<: *device
+    hostname: judge
+    command: bash /src/docker/teams/judge.sh
+
+volumes:
+  remote:

@@ -1,0 +1,11 @@
+# device      person   repo     role      — 10 containers, 3 knowledge repos, 1 intruder
+ana-laptop    ana      alpha    founder
+ana-desktop   ana      alpha    member
+ben           ben      alpha    member
+carla         carla    alpha    member
+mallory       mallory  alpha    intruder
+dan           dan      beta     founder
+eva           eva      beta     member
+finn          finn     beta     member
+gus-laptop    gus      gus      founder
+gus-server    gus      gus      member

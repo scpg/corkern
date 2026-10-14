@@ -18,7 +18,7 @@ from datetime import datetime
 
 import typer
 
-from corkern import guard
+from corkern import claude_print, guard
 from corkern.commands.reminders import fail
 from corkern.config import conf_entries, load_config, state_dir, valid_slug
 
@@ -84,7 +84,7 @@ def distill(
         if not claude:
             fail("'claude' CLI not found — install Claude Code or run without --auto.")
         typer.echo("Running Claude analysis...")
-        result = guard.capture_tool(repo.path, [claude, "-p", *model_args], prompt)
+        result = claude_print.ask(claude, prompt, model)
         if result.returncode != 0 or not result.stdout.strip():
             fail(f"Claude failed (exit {result.returncode}) — previous synthesis.md left unchanged.")
         now = datetime.now()
@@ -101,4 +101,6 @@ def distill(
         return
     typer.echo("Starting interactive Claude analysis session...\n"
                "(Claude will open with all your memories as context.)\n")
-    guard.exec_tool([claude, "--append-system-prompt-file", str(prompt_file), *model_args])
+    # from where the user is — unless that is inside the knowledge repo (its .claude/ is shared)
+    guard.exec_tool([claude, "--append-system-prompt-file", str(prompt_file), *model_args],
+                    cwd=claude_print.interactive_cwd())

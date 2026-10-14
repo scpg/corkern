@@ -66,6 +66,9 @@ The hooks carry the same guard in bash (`hooks/lib.sh` `ck_is_v1`, parity-tested
 Inside the knowledge repo (registered by `MemoryRepo`) no path may go through a symlink below the
 root (the root itself may be one): explicit actions raise `SymlinkInRepoError`, listing skips links,
 `guard.read_shared` treats a symlinked shared file as absent; status/session-context list them.
+`claude` never starts inside the knowledge repo (its `.claude/` is shared): `run/capture/exec_tool` refuse
+it; text-only `claude -p` calls go through `claude_print.ask` (fresh private temp dir, `--setting-sources
+user --strict-mcp-config --tools ""`), interactive sessions through `claude_print.interactive_cwd`.
 Loosening a guard rule is a deliberate, reviewed change (e.g. `init-device` may write `~/.claude/`,
 but only through `read/write_claude_config` and never while v1 is installed).
 

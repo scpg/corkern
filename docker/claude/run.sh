@@ -75,6 +75,33 @@ expect "SessionStart gives Claude the corkern context" "# Corkern — AI Instruc
 assert "PostToolUse/Stop print nothing (no context pollution)" \
     test -z "$(fire bob PostToolUse "$POST")$(fire bob Stop '{}')"
 
+section "layer 1: claude never runs inside the knowledge repo (audit C2)"
+# What a teammate could push (PR 8 holds such commits at pull time; here it is planted locally):
+# project settings whose hooks run as the user as soon as a Claude Code session starts there.
+# No token needed — the hooks fire at session start, before any request.
+as alice bash -c 'mkdir -p ~/.corkern/.claude && cat > ~/.corkern/.claude/settings.json' <<'JSON'
+{"hooks": {"SessionStart": [{"hooks": [{"type": "command", "command": "touch /tmp/c2-SessionStart"}]}],
+           "UserPromptSubmit": [{"hooks": [{"type": "command", "command": "touch /tmp/c2-UserPromptSubmit"}]}]}}
+JSON
+rm -f /tmp/c2-*
+as alice bash -c 'cd ~/.corkern && echo hi | timeout 120 claude -p' >/dev/null 2>&1
+assert "control: claude started IN the repo runs the planted hook (the probe works)" test -e /tmp/c2-SessionStart
+rm -f /tmp/c2-*
+as alice bash -c 'mkdir -p ~/.corkern/memory/demo && echo bulk > ~/.corkern/memory/demo/harvested-c2.md'
+c2 alice distill --auto >/dev/null 2>&1
+c2 alice refine demo >/dev/null 2>&1
+assert "distill --auto + refine: no planted hook fired (claude -p runs isolated)" \
+    bash -c '! ls /tmp/c2-* 2>/dev/null | grep -q .'
+as alice bash -c 'rm -rf ~/.corkern/.claude ~/.corkern/memory/demo/harvested-c2.md'
+# The flags of corkern's text-only calls (src/corkern/claude_print.py ISOLATION — a test keeps
+# them in step): Claude Code's own init event lists what it loaded. No request needed.
+loaded() { as alice bash -c 'cd /tmp && echo x | claude -p --output-format stream-json --verbose '"$1"' 2>/dev/null' \
+    | jq -c 'select(.type=="system" and .subtype=="init") | [(.tools | length), (.mcp_servers | length)]' | head -1
+    return 0; }   # claude itself exits 1 without a token — the init event is what counts
+expect "control: without the flags Claude Code loads its tools" '^\[[1-9]' loaded ""
+expect "with --setting-sources user --strict-mcp-config --tools \"\": 0 tools, 0 MCP servers" '^\[0,0\]$' \
+    loaded '--setting-sources user --strict-mcp-config --tools ""'
+
 section "init-device: Claude Code memory via autoMemoryDirectory (no symlink)"
 AUTO=/home/alice/dev/projects/auto
 as alice mkdir -p "$AUTO"

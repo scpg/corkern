@@ -30,7 +30,7 @@ from pathlib import Path
 
 import typer
 
-from corkern import guard
+from corkern import claude_print, guard
 from corkern.commands.reminders import fail, slug_for_cwd
 from corkern.commands.signing_cmd import device_name
 from corkern.config import load_config, state_dir
@@ -203,8 +203,8 @@ def _claude_or_fail() -> str:
     return claude
 
 
-def _run_claude(cwd: Path, prompt: str, model: str | None) -> str:
-    result = guard.capture_tool(cwd, [_claude_or_fail(), "-p", *(["--model", model] if model else [])], prompt)
+def _run_claude(prompt: str, model: str | None) -> str:
+    result = claude_print.ask(_claude_or_fail(), prompt, model)
     if result.returncode != 0:
         fail(f"Claude failed (exit {result.returncode}) — nothing was written or recorded.")
     return result.stdout or ""
@@ -284,10 +284,10 @@ def harvest(
         typer.echo(f"  Opening an interactive Claude session with the conversations as context.\n"
                    f"  Add your own recollections; ask Claude to write memory files to {mem_dir}/")
         guard.exec_tool([claude, "--append-system-prompt-file", str(prompt_file), *(["--model", model] if model else [])],
-                        cwd=project if project.is_dir() else repo.path)
+                        cwd=claude_print.interactive_cwd(project))
 
     typer.echo("  Running Claude extraction...")
-    output = _run_claude(repo.path, prompt, model)
+    output = _run_claude(prompt, model)
     if re.search(r"^NO_MEMORIES$", output, re.M):
         typer.echo("  ! No memories worth persisting found in these conversations.")
     else:
@@ -330,7 +330,7 @@ def refine(
         prompt = (f'The following is a bulk harvest of extracted memories for project "{slug}".\n'
                   "Reformat it into individual corkern memory files.\n\n" + FORMAT
                   + "\n---\nBULK CONTENT:\n\n" + guard.read_text(f) + "\n\n---\nNow produce the === FILE: === blocks.\n")
-        output = _run_claude(repo.path, prompt, model)
+        output = _run_claude(prompt, model)
         if re.search(r"^NO_MEMORIES$", output, re.M):
             dest = _archive(mem_dir, f)
             typer.echo(f"  ! {f.name}: no memories found — moved to archive/{dest.name}")

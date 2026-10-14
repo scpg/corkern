@@ -105,7 +105,8 @@ world markers;      reexport "printf '<<<<<<< ours\na\n=======\nb\n>>>>>>> their
                     verdict refuse "export carries conflict markers (made by an older script)" "no conflict markers"
 assert "markers: nothing reached the remote" bash -c "[ -z \"\$(git -C '$W/kr.git' for-each-ref)\" ]"
 world secret;       reexport "printf 'aws_secret_access_key = wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY\n' > data/memory/webshop/creds.md \
-                    && python3 /src/docker/migration/remanifest.py"; snap; run2; verdict ok "a secret in the v1 data is reported (--yes publishes)" "secret"
+                    && python3 /src/docker/migration/remanifest.py"; snap; run2; verdict ok "a secret in the v1 data is redacted before the migration commit" "secret"
+assert "secret: never reaches the remote (the original stays in the quarantine)" bash -c "! git -C '$W/kr.git' log --all -p | grep -qF wJalrXUtnFEMI && grep -rqF wJalrXUtnFEMI /home/$U/.local/state/corkern/quarantine"
 world remote-used;  git clone -q "$W/kr.git" "$W/x" 2>/dev/null; (cd "$W/x" && echo other > f && git add f && git -c user.name=x -c user.email=x@x commit -qm other && git push -q origin HEAD:main)
                     chown -R "$U:$U" "$W"; snap; run2; verdict refuse "the remote already has content" "empty"
 world unreachable;  REMOTE=/nonexistent/kr.git; snap; run2; verdict refuse "remote not reachable" "reachable"

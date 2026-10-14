@@ -70,6 +70,8 @@ def setup(
         elif mode == "migrate":
             plan = run_migrate(migrate, kr)
             typer.echo(f"Migrated {len(plan.files)} file(s) from {migrate} → {kr}")
+            for line in plan.report():
+                typer.echo(f"  ! {line}")
     except (InitError, guard.GitError, guard.BundleError) as e:
         fail(str(e))
 

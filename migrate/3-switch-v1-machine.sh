@@ -12,6 +12,11 @@
 # changed are copied, files both sides changed are kept side by side (<name>.conflict-v1-...),
 # MEMORY.md lines are combined, nothing is deleted. Then keys, trust, Claude Code wiring, IWE
 # and a sync check. rollback-v1-machine.sh undoes all of it.
+#
+# The cloned knowledge repo is not trusted: the export point it names is verified against this
+# machine's own record and v1's history before v1 is touched, the carry-over never writes through
+# a symlink (temp file + rename, as the hooks), and everything it commits goes through the hooks'
+# secret scan; the push step only runs after a scan of everything outgoing.
 # shellcheck source=migrate/lib.sh
 . "$(dirname "$(readlink -f "$0")")/lib.sh"
 parse_common "$@"
@@ -20,7 +25,7 @@ set -- "${ARGS[@]+"${ARGS[@]}"}"
 while [ $# -gt 0 ]; do case "$1" in
     --repo) REPO="$2"; shift ;; --remote) REMOTE="$2"; shift ;; --code-repo) CODE_REPO="$2"; shift ;;
     *) die "unknown option: $1" ;; esac; shift; done
-STEPS=(final-v1-sync final-export backup retire-v1 install keys carry-over confirm trust push init-device iwe verify)
+STEPS=(final-v1-sync final-export backup retire-v1 install keys carry-over confirm trust scan push init-device iwe verify)
 if [ "$SHOW_STATUS" = 1 ]; then show_status "$SCRIPT_NAME" "${STEPS[@]}"; exit 0; fi
 V1="$(v1_repo)"
 RETIRED="$V1-v1-retired"
@@ -28,6 +33,50 @@ KR="$(kr)"
 BACKUP="$MIG_DIR/backup"
 if [ -n "$REPO" ]; then TARGET="git@github.com:$REPO.git"; else TARGET="$REMOTE"; fi
 DATA_PATHS=(memory .devices global projects.conf .metrics.tsv)
+
+# ── the export point: the v1 commit the knowledge repo was built from ─────────────────────
+# Script 1's own record on this machine (its state, or the manifest of the folder it packed) wins;
+# the synced .corkern-migration can be written by anyone who can push, so it is only a claim.
+local_export_point() {
+    local v
+    v=$(grep '^var:v1_export_commit=' "$MIG_DIR/1-export-v1.state" 2>/dev/null | tail -1 | cut -d= -f2-)
+    [ -n "$v" ] || v=$(grep '^v1_export_commit=' "$HERE/manifest.txt" 2>/dev/null | head -1 | cut -d= -f2-)
+    printf '%s' "$v"
+}
+synced_export_point() {   # read from the commit, never through the work tree
+    local src="$KR" tmp="" v
+    if [ ! -d "$KR/.git" ]; then
+        tmp=$(mktemp -d) || return 1
+        timeout 60 git clone -q --bare --depth 1 -- "$TARGET" "$tmp/kr.git" >> "$LOG" 2>&1 || { rm -rf -- "$tmp"; return 1; }
+        src="$tmp/kr.git"
+    fi
+    v=$(git -C "$src" show HEAD:.corkern-migration 2>/dev/null | grep '^v1_export_commit=' | head -1 | cut -d= -f2-)
+    [ -z "$tmp" ] || rm -rf -- "$tmp"
+    printf '%s' "$v"
+}
+# export_point_ok REPO TIP... — sets BASE when the export point is a commit id this v1 has and an
+# ancestor of one of the TIPs; otherwise BASE_WHY says why (and how to fix it)
+export_point_ok() {
+    local repo="$1" mine synced tip; shift
+    BASE="" BASE_WHY=""
+    mine=$(local_export_point); synced=$(synced_export_point)
+    if [ -n "$mine" ] && [ -n "$synced" ] && [ "$mine" != "$synced" ]; then
+        BASE_WHY="export point differs: script 1 recorded $mine on this machine, the knowledge repo's .corkern-migration says $synced — find out who changed it before going on"
+        return 1
+    fi
+    BASE="${mine:-$synced}"
+    if [ -z "$BASE" ]; then BASE_WHY="the knowledge repo has no .corkern-migration (was it made by 2-setup-new-machine.sh?)"
+    elif ! [[ "$BASE" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]]; then BASE_WHY="the export point '$BASE' in .corkern-migration is not a commit id"
+    elif ! git -C "$repo" cat-file -e "$BASE^{commit}" 2>/dev/null; then
+        BASE_WHY="this v1 does not have the export point $BASE — fetch v1 first (git -C $repo pull), then run this script again"
+    else
+        for tip in "$@"; do
+            git -C "$repo" merge-base --is-ancestor --end-of-options "$BASE" "$tip" 2>/dev/null && return 0
+        done
+        BASE_WHY="the export point $BASE is not an ancestor of v1's history here — this knowledge repo was not made from this v1"
+    fi
+    [ -z "$BASE_WHY" ] || { BASE=""; return 1; }
+}
 
 title "corkern migration — 3/3: switch this machine from v1 to v2 ($(hostname))"
 say "  log: $LOG"
@@ -45,6 +94,11 @@ need "where the knowledge repo is: --repo <owner>/<name> or --remote <url>" "add
 need "knowledge repo reachable: $TARGET" "check access (ssh -T git@github.com) and the name" timeout 20 git ls-remote "$TARGET"
 if done_step install; then ok "v2 already installed by an earlier run ($KR)"
 else need "no v2 knowledge repo yet at $KR" "move it away, or set CORKERN_MEMORY_DIR" bash -c "! [ -e '$KR' ]"; fi
+if ! done_step carry-over && [ "$FAILED_NEEDS" = 0 ]; then
+    if done_step retire-v1; then BASE_REPO="$RETIRED"; else BASE_REPO="$V1"; fi
+    export_point_ok "$BASE_REPO" HEAD "@{upstream}"
+    need "export point verified${BASE:+: $BASE}" "$BASE_WHY" test -n "$BASE"
+fi
 for t in git uv ssh-keygen flock timeout python3; do need "$t installed" "install $t" command -v "$t"; done
 need "python3 >= 3.10" "install python3 3.10 or newer" py_ok
 need "corkern code reachable: $CODE_REPO" "check GitHub access or pass --code-repo" timeout 20 git ls-remote --quiet "$CODE_REPO" "$CODE_REF"
@@ -121,63 +175,171 @@ keys() {
     return 0
 }
 
+# ── writing into the knowledge repo: never through a symlink ───────────────────────────────
+# kr_unsafe REL — why REL must not be written (a symlink or a non-folder on the way, the file
+# itself a symlink, or a path outside the repo); prints nothing when it is safe
+kr_unsafe() {
+    local rest="$1" c="$KR" part
+    while :; do
+        part="${rest%%/*}"; c="$c/$part"
+        [ -L "$c" ] && { echo "symlink: ${c#"$KR"/}"; return; }
+        [ "$part" = "$rest" ] && break
+        [ -e "$c" ] && [ ! -d "$c" ] && { echo "not a folder: ${c#"$KR"/}"; return; }
+        rest="${rest#*/}"
+    done
+    case "$(realpath -m -- "$KR/$1")" in "$(realpath -- "$KR")"/*) ;; *) echo "outside the knowledge repo" ;; esac
+}
+# kr_put REL COMMAND... — COMMAND's output becomes REL: written to a temp file next to it, then
+# renamed over it (as the hooks' ck_put); refused when kr_unsafe objects
+kr_put() {
+    local rel="$1" dir tmp; shift
+    [ -z "$(kr_unsafe "$rel")" ] || return 1
+    dir=$(dirname -- "$KR/$rel")
+    mkdir -p -- "$dir" || return 1
+    tmp=$(mktemp -- "$dir/.corkern-put.XXXXXX") || return 1
+    if ! "$@" > "$tmp" || ! chmod "$(printf '%o' $(( 0666 & ~0$(umask) )))" -- "$tmp"; then rm -f -- "$tmp"; return 1; fi
+    mv -T -f -- "$tmp" "$KR/$rel"
+}
+# with_lines REL LINE... — REL's text (a missing final newline added), then each LINE
+with_lines() {
+    local rel="$1"; shift
+    if [ -s "$KR/$rel" ]; then cat -- "$KR/$rel"; [ -z "$(tail -c1 -- "$KR/$rel")" ] || echo; fi
+    [ $# -eq 0 ] || printf '%s\n' "$@"
+}
+# has_line FILE LINE — LINE is a whole line of FILE (the last one may lack its newline)
+has_line() { [ -f "$1" ] && grep -qxF -- "$2" "$1"; }
+has_slug() { [ -f "$1" ] && cut -d: -f1 -- "$1" | grep -qxF -- "$2"; }
+
+# scan_staged REPORT — the hooks' secret scan on everything staged in the knowledge repo: a secret
+# is replaced by a marker (the original stays in this machine's quarantine), a file corkern cannot
+# check is left out (reported). If the scan cannot run nothing stays staged and it fails (closed).
+scan_staged() {
+    local report="$1" f out hint
+    local -a staged=() suspect=() redacted=()
+    while IFS= read -r -d '' f; do staged+=("$f"); done \
+        < <(git -C "$KR" diff --cached --name-only --no-renames -z --diff-filter=AM)
+    [ "${#staged[@]}" -gt 0 ] || return 0
+    hint=$(sed -n "s/^CK_SECRET_HINT='\(.*\)'$/\1/p" "$HOME/.local/share/corkern/hooks/lib.sh" 2>/dev/null)
+    if [ -n "$hint" ]; then
+        while IFS= read -r -d '' f; do suspect+=("$f"); done < <(cd "$KR" && grep -lZiE -- "$hint" "${staged[@]}" 2>/dev/null)
+        [ "${#suspect[@]}" -gt 0 ] || return 0
+    fi
+    if [ -z "$hint" ] || ! out=$(cd "$KR" && c2 secrets --redact "${suspect[@]}" 2>> "$LOG"); then
+        git -C "$KR" reset -q
+        err "the secret scan could not run — nothing committed; run this script again (it resumes here)"
+        return 1
+    fi
+    while IFS= read -r f; do
+        case "$f" in
+            "") ;;
+            "HOLD "*) git -C "$KR" reset -q -- "${f#HOLD }"
+                      echo "not committed — could not be checked for secrets (binary or over 2 MB): ${f#HOLD }" >> "$report" ;;
+            *) redacted+=("$f"); echo "secret removed (original kept on this machine only): $f" >> "$report" ;;
+        esac
+    done <<< "$out"
+    [ "${#redacted[@]}" -eq 0 ] || git -C "$KR" add -- "${redacted[@]}"
+}
+
 carry_over() {
-    local base end report="$MIG_DIR/carry-over-report.txt" stamp host copied=0 kept=0 merged=0 same=0
-    base=$(grep '^v1_export_commit=' "$KR/.corkern-migration" 2>/dev/null | cut -d= -f2)
+    local base end report="$MIG_DIR/carry-over-report.txt" stamp host copied=0 kept=0 merged=0 same=0 skipped=0 lost=0
     end=$(getvar v1_end_commit)
-    [ -n "$base" ] || { err "the knowledge repo has no .corkern-migration (was it made by 2-setup-new-machine.sh?)"; return 1; }
-    git -C "$RETIRED" cat-file -e "$base^{commit}" 2>/dev/null \
-        || { err "v1 here does not know the export point $base — run 'git pull' in $RETIRED, then this script again"; return 1; }
+    [[ "$end" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]] || { err "no v1 end commit recorded (step final-v1-sync)"; return 1; }
+    export_point_ok "$RETIRED" "$end" || { err "$BASE_WHY"; return 1; }
+    base="$BASE"
     stamp=$(date +%Y%m%d%H%M%S); host=$(hostname -s 2>/dev/null || hostname)
     : > "$report"
     # -z: names with spaces, unicode, quotes or tabs come through unquoted and intact
+    local status f why line slug
     while IFS= read -r -d '' status && IFS= read -r -d '' f; do
         local dest="$KR/$f"
         case "$status" in
             D) echo "kept (deleted on v1 since the export): $f" >> "$report"; continue ;;
         esac
+        why=$(kr_unsafe "$f")
+        if [ -n "$why" ]; then
+            echo "skipped ($why): $f — v1's version stays in $RETIRED" >> "$report"; skipped=$((skipped + 1)); continue
+        fi
         if [ ! -e "$dest" ] || git -C "$RETIRED" show "$base:$f" 2>/dev/null | cmp -s - "$dest"; then
-            mkdir -p "$(dirname "$dest")"; git -C "$RETIRED" show "$end:$f" > "$dest"
+            kr_put "$f" git -C "$RETIRED" show "$end:$f" || { echo "skipped (could not write): $f" >> "$report"; skipped=$((skipped + 1)); continue; }
             echo "copied: $f" >> "$report"; copied=$((copied + 1))
         elif git -C "$RETIRED" show "$end:$f" | cmp -s - "$dest"; then
             same=$((same + 1))
         elif [ "$(basename "$f")" = MEMORY.md ]; then
-            git -C "$RETIRED" show "$end:$f" | while IFS= read -r line; do
-                grep -qxF -- "$line" "$dest" || printf '%s\n' "$line" >> "$dest"
-            done
-            echo "combined lines: $f" >> "$report"; merged=$((merged + 1))
+            local -a add=() want=()
+            local -A seen=()
+            while IFS= read -r line || [ -n "$line" ]; do
+                want+=("$line")
+                has_line "$dest" "$line" || [ -n "${seen["x$line"]:-}" ] || { add+=("$line"); seen["x$line"]=1; }
+            done < <(git -C "$RETIRED" show "$end:$f")
+            [ "${#add[@]}" -eq 0 ] || kr_put "$f" with_lines "$f" "${add[@]}" || true
+            local missing=0
+            for line in "${want[@]+"${want[@]}"}"; do has_line "$dest" "$line" || missing=$((missing + 1)); done
+            if [ "$missing" -eq 0 ]; then echo "combined lines: $f" >> "$report"; merged=$((merged + 1))
+            else echo "NOT combined — $missing line(s) of v1's version missing: $f" >> "$report"; lost=$((lost + 1)); fi
         else
             local base_name="${f##*/}" copy
             if [[ "$base_name" == *.* ]]; then copy="${f%.*}.conflict-v1-$host-$stamp.${f##*.}"; else copy="$f.conflict-v1-$host-$stamp"; fi
-            git -C "$RETIRED" show "$end:$f" > "$KR/$copy"
+            kr_put "$copy" git -C "$RETIRED" show "$end:$f" || { echo "skipped (could not write): $copy" >> "$report"; skipped=$((skipped + 1)); continue; }
             echo "BOTH CHANGED — v1 version kept next to it: $copy" >> "$report"; kept=$((kept + 1))
         fi
     done < <(git -C "$RETIRED" diff -z --name-status --no-renames "$base" "$end" -- memory global)
-    local slug line added=0
-    while IFS= read -r line; do
-        slug="${line%%:*}"
-        [[ -z "$slug" || "$slug" == \#* ]] && continue
-        grep -q "^$slug:" "$KR/corkern.conf" || { printf '%s\n' "$line" >> "$KR/corkern.conf"; echo "project added: $slug" >> "$report"; added=$((added + 1)); }
-    done < <(git -C "$RETIRED" show "$end:projects.conf")
-    # this machine's own paths (v1 projects.local.conf → v2 corkern.conf.local, never committed)
-    local localconf=0
-    if [ -f "$RETIRED/projects.local.conf" ]; then
-        touch "$KR/corkern.conf.local"
-        while IFS= read -r line; do
+    # registrations: v1 projects.conf → corkern.conf; this machine's own paths (v1
+    # projects.local.conf → v2 corkern.conf.local, never committed). A last line without a newline
+    # counts, and the destination gets one before anything is appended.
+    local added=0 localconf=0 src rel n
+    for src in projects.conf projects.local.conf; do
+        if [ "$src" = projects.conf ]; then rel=corkern.conf; else rel=corkern.conf.local; fi
+        [ "$src" = projects.conf ] || [ -f "$RETIRED/$src" ] || continue
+        why=$(kr_unsafe "$rel")
+        if [ -n "$why" ]; then echo "skipped ($why): $rel — v1's $src stays in $RETIRED" >> "$report"; skipped=$((skipped + 1)); continue; fi
+        local -a add=()
+        local -A slugs=()
+        while IFS= read -r line || [ -n "$line" ]; do
             slug="${line%%:*}"
             [[ -z "$slug" || "$slug" == \#* ]] && continue
-            grep -q "^$slug:" "$KR/corkern.conf.local" \
-                || { printf '%s\n' "$line" >> "$KR/corkern.conf.local"; echo "local path kept: $line" >> "$report"; localconf=$((localconf + 1)); }
-        done < "$RETIRED/projects.local.conf"
-    fi
+            has_slug "$KR/$rel" "$slug" || [ -n "${slugs["x$slug"]:-}" ] && continue
+            add+=("$line"); slugs["x$slug"]=1
+        done < <(if [ "$src" = projects.conf ]; then git -C "$RETIRED" show "$end:projects.conf"; else cat -- "$RETIRED/$src"; fi)
+        [ "${#add[@]}" -eq 0 ] && continue
+        kr_put "$rel" with_lines "$rel" "${add[@]}" || true
+        n=0
+        for line in "${add[@]}"; do
+            if has_line "$KR/$rel" "$line"; then
+                n=$((n + 1))
+                if [ "$rel" = corkern.conf ]; then echo "project added: ${line%%:*}" >> "$report"; else echo "local path kept: $line" >> "$report"; fi
+            else echo "NOT added to $rel: $line" >> "$report"; lost=$((lost + 1)); fi
+        done
+        if [ "$rel" = corkern.conf ]; then added=$n; else localconf=$n; fi
+    done
     git -C "$KR" add -A
+    scan_staged "$report" || return 1
     if ! git -C "$KR" diff --cached --quiet; then
         run git -C "$KR" commit -q -m "corkern: carry over v1 changes from $host since the export" || return 1
     fi
-    cat "$report" | sed 's/^/    /' | tee -a "$LOG"
-    ok "carried over: $copied copied, $merged index(es) combined, $kept kept side by side, $added project(s), $localconf local path(s), $same already identical"
+    sed 's/^/    /' "$report" | tee -a "$LOG"
+    setvar carried $((copied + merged + kept + added + localconf))
+    if [ "$(getvar carried)" = 0 ] && [ "$skipped" = 0 ]; then ok "nothing to carry over — v1 wrote nothing since the export ($same already identical)"
+    else ok "carried over: $copied copied, $merged index(es) combined, $kept kept side by side, $added project(s), $localconf local path(s), $same already identical"; fi
     [ "$kept" -gt 0 ] && warn "$kept file(s) changed on both sides — merge each *.conflict-v1-* file into its original, then delete the copy"
+    [ "$skipped" -gt 0 ] && warn "$skipped file(s) skipped (see the report above) — v1's versions are in $RETIRED; copy what you need by hand"
+    [ "$lost" -eq 0 ] || { err "$lost line(s) did not arrive (see the report above) — nothing is lost: v1 keeps them in $RETIRED"; return 1; }
     return 0
+}
+
+# scan_outgoing — before the push: anything left uncommitted goes through the same scan and is
+# committed; then every commit that would be pushed is checked, and a secret in one stops the push
+scan_outgoing() {
+    local report="$MIG_DIR/scan-report.txt"
+    : > "$report"
+    git -C "$KR" add -A
+    scan_staged "$report" || return 1
+    git -C "$KR" diff --cached --quiet || run git -C "$KR" commit -q -m "corkern: changes from the switch on $(hostname -s 2>/dev/null || hostname)" || return 1
+    sed 's/^/    /' "$report" | tee -a "$LOG"
+    if ! run c2 secrets --scan --outgoing; then
+        err "a commit that would be pushed holds a secret — nothing pushed. Remove it from those commits (they are not on the remote yet), then run this script again"
+        return 1
+    fi
+    ok "nothing that will be pushed holds a secret"
 }
 
 confirm() {
@@ -190,7 +352,13 @@ confirm() {
         ask "Import what is missing? (differing files stay as they are)" || { warn "not imported — check later: corkern import $f --check"; return 0; }
         run c2 import "$f" --apply --yes --missing-only || return 1
     fi
-    printf '%s\n' "$out" | grep -q "different here" && say "  Differing files are expected (both machines kept working); the carry-over kept both versions where needed."
+    if [ "$(getvar carried)" = 0 ]; then
+        ok "nothing to carry over — v1 wrote nothing since the export"
+        printf '%s\n' "$out" | grep -q "different here" \
+            && warn "files differ although v1 wrote nothing since the export — check them: corkern import $f --check"
+    else
+        printf '%s\n' "$out" | grep -q "different here" && say "  Differing files are expected (both machines kept working); the carry-over kept both versions where needed."
+    fi
     ok "confirmed against the final v1 export"
 }
 
@@ -247,6 +415,7 @@ step keys          "This machine's signing key (+ push key)"              keys
 step carry-over    "Carry over what v1 wrote since the export"            carry_over
 step confirm       "Confirm: everything v1 held is in v2"                 confirm
 step trust         "Pull verification (trust your other machines)"        trust
+step scan          "Secret scan of everything that will be pushed"        scan_outgoing
 step push          "Push to the knowledge repo"                           push
 step init-device   "Wire Claude Code (replaces v1's hooks)"               init_device
 step iwe           "IWE knowledge graph (optional)"                       iwe_step

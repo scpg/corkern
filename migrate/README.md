@@ -31,6 +31,15 @@ case is tested in `make test-scenarios`. Script 2 refuses, before installing any
 that is damaged, incomplete, from a newer corkern or holds conflict markers, a remote that
 already has commits, and a machine where git does not know your name/email yet.
 
+Script 3 does not trust the knowledge repo it clones. Before v1 is touched it checks the export
+point named in `.corkern-migration`: it must be a commit id that this v1 has (otherwise: fetch v1
+first) and an ancestor of v1's history, and where this machine ran script 1 it must equal script 1's
+own record (both values are shown when they differ). The carry-over never writes through a symlink
+or outside the repo (such files are skipped and listed in the report; v1's versions stay in the
+retired repo), keeps a last line without a newline, says "combined" only when every line arrived,
+and commits only after the hooks' secret scan. A separate scan step checks everything that will be
+pushed and stops before the push if a commit holds a secret.
+
 To redo a script from the start: `--restart` (the previous progress is kept as `*.state.*.old`).
 Any time: `bash migrate/status.sh` (where this machine stands), `--status` on a script (its
 steps), `--dry-run` (only the precondition check).

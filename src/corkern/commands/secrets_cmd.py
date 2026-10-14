@@ -3,6 +3,7 @@
   corkern secrets                  what was removed before commit on this machine
   corkern secrets --scan           check the repo's files for secrets (read-only; exit 1 if any)
   corkern secrets --scan --history also check every version ever committed
+  corkern secrets --scan --outgoing only the commits a push would send (@{upstream}..HEAD)
   corkern secrets --redact F...    (used by the hooks) replace secrets in F... with a marker
 
 The hooks call --redact on staged files that look suspicious, right before each commit: the
@@ -98,10 +99,20 @@ def _scan_files(repo_path: Path) -> int:
     return found
 
 
-def _scan_history(repo_path: Path) -> int:
-    """Added lines of every commit on every branch (what a clone of the remote contains)."""
-    out = guard.run_git(repo_path, "-c", "core.quotePath=false", "log", "--all", "-p", "--no-color",
-                        "--no-ext-diff", "--format=commit %h").stdout
+def _outgoing(repo_path: Path) -> list[str]:
+    """The revisions a push would send: @{upstream}..HEAD, or all of HEAD without an upstream."""
+    try:
+        guard.run_git(repo_path, "rev-parse", "--verify", "-q", "@{upstream}")
+        return ["@{upstream}..HEAD"]
+    except guard.GitError:
+        return ["HEAD"]
+
+
+def _scan_history(repo_path: Path, revs: list[str] | None = None) -> int:
+    """Added lines of every commit on every branch (what a clone of the remote contains), or of
+    the given revisions only."""
+    out = guard.run_git(repo_path, "-c", "core.quotePath=false", "log", *(revs or ["--all"]), "-p", "--no-color",
+                        "--no-ext-diff", "--format=commit %h", "--").stdout
     found, commit, file = 0, "", ""
     for line in out.splitlines():
         if line.startswith("commit "):
@@ -116,6 +127,7 @@ def _scan_history(repo_path: Path) -> int:
 def secrets(
     scan_repo: bool = typer.Option(False, "--scan", help="Check the knowledge repo's files (read-only)"),
     history: bool = typer.Option(False, "--history", help="With --scan: also every committed version"),
+    outgoing: bool = typer.Option(False, "--outgoing", help="With --scan: only the commits a push would send"),
     redact_paths: list[str] = typer.Option(None, "--redact", help="(hooks) redact these files in place"),
     files: list[str] = typer.Argument(None, hidden=True),
 ) -> None:
@@ -127,6 +139,16 @@ def secrets(
             typer.echo(rel)
         for rel in held:
             typer.echo(f"HOLD {rel}")             # read by hooks/lib.sh: do not commit these
+        return
+
+    if scan_repo and outgoing:
+        revs = _outgoing(repo.path)
+        typer.echo(f"Scanning what a push would send ({revs[0]}) ...")
+        found = _scan_history(repo.path, revs)
+        if found:
+            fail(f"{found} possible secret(s) in commits that are not pushed yet — remove them from those "
+                 "commits before pushing (e.g. git rebase -i), then check again.")
+        typer.echo("  ✓ No secrets in what a push would send")
         return
 
     if scan_repo:

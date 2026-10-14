@@ -252,7 +252,7 @@ ck_pull() {
     ck_verify_incoming "$1" "$up" || { ck_commit_all "auto: sync" || true; return 1; }
     for tries in 1 2 3; do
         ck_commit_all "auto: sync" || true
-        if out=$(ck_git rebase -q "$up" 2>&1); then ck_stamp pull; return 0; fi
+        if out=$(ck_git rebase -q --end-of-options "$up" 2>&1); then ck_stamp pull; return 0; fi
         if ck_in_progress; then                      # real conflict → keep both versions
             ck_git rebase --abort >/dev/null 2>&1
             ck_merge_keep_both "$1" "$out" "$up"
@@ -281,8 +281,27 @@ ck_pull() {
 #    root. Once the remote removes such a path, the range is integrated again.
 # 2. Signatures, when this machine has a trust store (`corkern trust --enable`): the keys THIS
 #    machine confirmed. It lives in .git/, so it is never synced — a commit that adds a key to
-#    the synced .devices/allowed_signers cannot vouch for itself. Unsigned or untrusted commits
-#    wait until `corkern trust` accepts them (or their device).
+#    the synced .devices/allowed_signers cannot vouch for itself. A commit counts only with an
+#    SSH signature that git rates exactly G whose key is in that store; OpenPGP and X.509 are
+#    switched off (git would otherwise ask the user's GnuPG keyring). Everything else waits
+#    until `corkern trust` accepts it (or its device).
+#
+# Revisions given to git are always preceded by --end-of-options (and followed by --).
+
+# Git settings for signature checks: SSH against this machine's trust store, nothing else
+ck_sig_config() {
+    printf '%s\n' -c "gpg.ssh.allowedSignersFile=$1" -c gpg.ssh.program=ssh-keygen \
+        -c gpg.openpgp.program=false -c gpg.x509.program=false
+}
+
+# ck_trusted_fps TRUST-FILE — SHA256 fingerprints of the keys in this machine's trust store
+ck_trusted_fps() {
+    local line key
+    while IFS= read -r line; do
+        key=$(awk '{for (i = 1; i < NF; i++) if ($i ~ /^(ssh-|ecdsa-|sk-)/) { print $i " " $(i + 1); exit }}' <<< "$line")
+        [ -n "$key" ] && printf '%s\n' "$key" | ssh-keygen -lf - 2>/dev/null | awk '{print $2}'
+    done < "$1"
+}
 
 # ck_dangerous MODE PATH — prints why an incoming MODE/PATH may not be checked out
 ck_dangerous() {
@@ -309,13 +328,13 @@ ck_verify_incoming() {
     local fail="could not inspect incoming commits — nothing integrated"
     head=$(ck_git rev-parse --verify -q 'HEAD^{commit}' 2>/dev/null) \
         || { ck_hold "$hook" "$fail" "ERROR"$'\t'"could not inspect incoming commits (no HEAD)"; return 1; }
-    base=$(ck_git merge-base "$head" "$up" 2>/dev/null) \
+    base=$(ck_git merge-base --end-of-options "$head" "$up" 2>/dev/null) \
         || { ck_hold "$hook" "$fail" "ERROR"$'\t'"could not inspect incoming commits (no merge base)"; return 1; }
-    commits=$(ck_git rev-list --reverse "$head..$up" -- 2>/dev/null) \
+    commits=$(ck_git rev-list --reverse --end-of-options "$head..$up" -- 2>/dev/null) \
         || { ck_hold "$hook" "$fail" "ERROR"$'\t'"could not inspect incoming commits (rev-list failed)"; return 1; }
     raw=$(mktemp -- "$CK_STATE/incoming.XXXXXX") \
         || { ck_hold "$hook" "$fail" "ERROR"$'\t'"could not inspect incoming commits (no temp file)"; return 1; }
-    if ! ck_git diff --raw -z --no-renames --no-ext-diff --no-textconv "$base" "$up" -- > "$raw" 2>/dev/null; then
+    if ! ck_git diff --raw -z --no-renames --no-ext-diff --no-textconv --end-of-options "$base" "$up" -- > "$raw" 2>/dev/null; then
         rm -f -- "$raw"
         ck_hold "$hook" "$fail" "ERROR"$'\t'"could not inspect incoming commits (diff failed)"; return 1
     fi
@@ -323,16 +342,21 @@ ck_verify_incoming() {
         [ "${meta##* }" = D ] && continue                       # removing something is always fine
         mode=${meta#:}; mode=${mode#* }; mode=${mode%% *}       # ":old new osha nsha S" → new
         why=$(ck_dangerous "$mode" "$path") || continue
-        sha=$(ck_git log -1 --format=%H "$head..$up" -- "$path" 2>/dev/null)
+        sha=$(ck_git log -1 --format=%H --end-of-options "$head..$up" -- "$path" 2>/dev/null)
         held+=("${sha:-$up}"$'\t'"$why: $path")
     done < "$raw"
     rm -f -- "$raw"
     if [ -f "$trust" ]; then
+        local fps sig
+        local -a cfg=()
+        fps=$(ck_trusted_fps "$trust")                   # empty → nothing passes (fail closed)
+        mapfile -t cfg < <(ck_sig_config "$trust")
         while IFS= read -r sha; do
             [ -n "$sha" ] || continue
             [ -f "$accepted" ] && grep -qx -- "$sha" "$accepted" && continue
-            ck_git -c gpg.ssh.allowedSignersFile="$trust" -c gpg.ssh.program=ssh-keygen \
-                verify-commit "$sha" >/dev/null 2>&1 || held+=("$sha"$'\t'"not signed by a device this machine trusts")
+            sig=$(ck_git "${cfg[@]}" log -1 --format='%G?%x09%GK' --end-of-options "$sha" -- 2>/dev/null)
+            if [ "${sig%%$'\t'*}" = G ] && [ -n "$fps" ] && grep -qxF -- "${sig#*$'\t'}" <<< "$fps"; then continue; fi
+            held+=("$sha"$'\t'"not signed by a device this machine trusts")
         done <<< "$commits"
     fi
     if [ "${#held[@]}" -eq 0 ]; then rm -f -- "$CK_STATE/held"; return 0; fi
@@ -395,7 +419,7 @@ ck_put() {
 ck_merge_keep_both() {
     local hook="$1" rebase_out="$2" up="$3" f copy ok=1 kept=()
     ck_commit_all "auto: sync" || true
-    if ck_git merge --no-edit -q "$up" >/dev/null 2>&1; then ck_stamp pull; return 0; fi
+    if ck_git merge --no-edit -q --end-of-options "$up" >/dev/null 2>&1; then ck_stamp pull; return 0; fi
     while IFS= read -r -d '' f; do
         if ck_git cat-file -e ":3:$f" 2>/dev/null; then
             ck_put ":3:$f" "$f" || { ok=0; break; }              # remote version at the path
@@ -440,7 +464,7 @@ ck_push() {
 
 ck_ahead() {
     local n
-    n=$(ck_git rev-list --count '@{upstream}..HEAD' -- 2>/dev/null) || return 0  # no upstream yet → try
+    n=$(ck_git rev-list --count --end-of-options '@{upstream}..HEAD' -- 2>/dev/null) || return 0  # no upstream yet → try
     [ "$n" -gt 0 ]
 }
 

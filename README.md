@@ -100,7 +100,10 @@ concurrently, real Claude Code sessions) are listed in [CLAUDE.md](CLAUDE.md).
 - <img src="docs/assets/icons/deploy-key.webp" width="20" alt=""> **Accepts only what your devices
   signed** (opt-in, `corkern trust`): each machine keeps its own list of trusted device keys.
   Incoming memories signed by any other key, or unsigned, are held back and listed — they do not
-  reach Claude's context on that machine until you accept them.
+  reach Claude's context on that machine until you accept them. Only SSH signatures by a key in
+  that machine's own list count: OpenPGP or X.509 signatures are held back too, whatever a GnuPG
+  keyring on the machine says, and a device name is shown as verified only when it comes from
+  that list.
 - <img src="docs/assets/icons/reminders.webp" width="20" alt=""> **Keeps secrets out of the
   repository**: before every commit, known token formats, private keys and `password = …`-style
   values in memories are replaced by a marker; the original stays on that machine only

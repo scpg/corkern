@@ -21,7 +21,7 @@ and the tests that need the v1 code (parity, migration, scenarios) skip or run l
 | Hooks (`hooks/`, bash) | `corkern.sh corkern-session-start` (pull → context), `corkern-commit-memory`, `corkern-push`; wired by `init-device` |
 | Installer | `install.sh` (`--new`, `--clone`, `--create-github`, existing); installs only `corkern` |
 | Parity vs v1 | cases vs the REAL v1 script (`tests/test_parity_v1.py`, local only) |
-| Safety | secret scan before every hook commit (redact + local quarantine, `secrets`); pull-time signature verification against a LOCAL trust store (`trust`); MEMORY.md 200-line/25 KB warnings (status + session context) |
+| Safety | secret scan before every hook commit (redact + local quarantine, `secrets`); pull-time signature verification against a LOCAL trust store (`trust`): SSH only (OpenPGP/X.509 switched off), a commit counts only with `%G?` = G and its key in `.git/corkern/trusted_signers`, names only from that store; held entries must be commit ids and every revision goes to git after `--end-of-options`; MEMORY.md 200-line/25 KB warnings (status + session context) |
 | `init-device` | per-project `autoMemoryDirectory`, hooks + env merged into the user `settings.json`, `@import` of global/CLAUDE.md, device manifest — verified with real Claude Code in Docker; `--apply` refused while v1 is installed (guard: `read/write_claude_config`, only those two files, never through a symlink) |
 | v1 parity | every v1 command, flag, hook and setup step has a v2 equivalent except native-Windows `.ps1` — docs/v1-v2-parity.md |
 | Release | `.github/workflows/release.yml` (tag `v*` → TestPyPI / PyPI, Trusted Publishing) — docs/releasing.md |

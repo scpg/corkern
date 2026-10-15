@@ -41,10 +41,14 @@ jobs:
           echo "${SHELLCHECK_SHA256}  shellcheck.tar.xz" | sha256sum -c -
           tar xJf shellcheck.tar.xz -C bin --strip-components=1 "shellcheck-v${SHELLCHECK_VERSION}/shellcheck"
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
-      - name: Build wheel + sdist
+      - name: Build wheel + sdist (exactly as release.yml's build job)
         run: |
           uv venv --python 3.12
-          uv build -o dist
+          uv build --no-create-gitignore -o dist
+      - name: dist holds exactly this version's sdist + wheel (as release.yml checks before publishing)
+        run: |
+          VERSION=$(.venv/bin/python -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')
+          .venv/bin/python scripts/check_release_version.py dist --version "$VERSION" dist
       - name: Release gate (allow-list, secrets, private markers, knowledge repo layout)
         run: .venv/bin/python scripts/release_gate.py dist
       - name: bandit (medium and high)

@@ -26,6 +26,11 @@ STATUS_FUNCTION = re.compile(r"\b(always|cancelled|success|failure)\(\)")
 PYPI_PRERELEASE = "(needs.check.outputs.prerelease == 'true' && needs.publish-testpypi.result == 'success')"
 PYPI_FINAL = "(needs.check.outputs.prerelease == 'false' && needs.publish-testpypi.result == 'skipped')"
 PINNED_USES = re.compile(r"uses: [\w.-]+/[\w./-]+@[0-9a-f]{40} # v\d+(\.\d+)*$")
+# uv writes dist/.gitignore unless told not to; the strict dist check refuses it (it once stopped
+# a release at `build`): release.yml and the gate (every pull request) build the same way
+UV_BUILD = "uv build --no-create-gitignore -o dist"
+DIST_CHECK = 'check_release_version.py dist --version "$VERSION" dist'
+SETUP_UV = re.compile(r'uses: (astral-sh/setup-uv@[0-9a-f]{40} # v[\d.]+)\n\s+with:\n\s+version: "([^"]+)"')
 
 
 def jobs(text: str) -> dict[str, str]:
@@ -184,13 +189,25 @@ def problems(release: str, gate: str) -> list[str]:
             or "fetch-depth: 0" not in rjobs["check"]:
         found.append("check")
     build = rjobs["build"]
-    steps = ["uv build -o dist", "check_release_version.py dist --version \"$VERSION\" dist",
+    steps = ["uv build", "check_release_version.py dist --version \"$VERSION\" dist",
              "scripts/release_gate.py dist", "sha256sum", "GITHUB_STEP_SUMMARY", "actions/upload-artifact@"]
     positions = [build.find(s) for s in steps]
     if -1 in positions or positions != sorted(positions) or build.count("uv build") != 1:
         found.append("build")
     if "needs: check" not in build:
         found.append("build-needs")
+    if UV_BUILD not in build:
+        found.append("no-create-gitignore:release")
+    # the gate builds exactly like the release and runs the same strict dist check, with the
+    # version from pyproject.toml (no tag on a pull request)
+    gjob = jobs(gate).get("release-gate", "")
+    order = [gjob.find(s) for s in (UV_BUILD, "tomllib", "pyproject.toml", DIST_CHECK, "scripts/release_gate.py dist")]
+    if -1 in order or order != sorted(order) or gjob.count("uv build") != 1:
+        found.append("gate-build")
+    # one setup-uv pin and one uv version for every build
+    pins = {m.groups() for m in SETUP_UV.finditer(build + "\n" + gjob)}
+    if len(pins) != 1 or len(SETUP_UV.findall(build)) != 1 or len(SETUP_UV.findall(gjob)) != 1:
+        found.append("uv-pins")
     for name, env in PUBLISH_JOBS.items():
         job = rjobs[name]
         if not re.search(rf"^    needs: {re.escape(NEEDS[name])}$", job, re.MULTILINE):
@@ -257,6 +274,14 @@ MUTATIONS = [
     ("testpypi-target", "release", "if: needs.check.outputs.prerelease == 'true'", "if: always()"),
     ("pypi-target", "release", "repository-url: https://upload.pypi.org/legacy/", "repository-url: https://test.pypi.org/legacy/"),
     ("gate-trigger", "gate", "  workflow_call:\n", "  workflow_call:\n  push:\n"),
+    ("no-create-gitignore:release", "release", "uv build --no-create-gitignore -o dist", "uv build -o dist"),
+    ("gate-build", "gate", "uv build --no-create-gitignore -o dist", "uv build -o dist"),
+    ("gate-build", "gate", '          .venv/bin/python scripts/check_release_version.py dist --version "$VERSION" dist\n', ""),
+    ("gate-build", "gate", 'print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])', 'print("2.0.0rc1")'),
+    ("gate-build", "gate", "uv build --no-create-gitignore -o dist\n", "uv build --no-create-gitignore -o dist\n          uv build -o dist\n"),
+    ("uv-pins", "gate", 'version: "0.11.23"', 'version: "0.11.22"'),
+    ("uv-pins", "release", "astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0",
+     "astral-sh/setup-uv@0123456789abcdef0123456789abcdef01234567 # v10.2.0"),
 ]
 
 
@@ -328,3 +353,15 @@ def test_ci_actionlint_is_pinned():
     job = jobs(CI)["actionlint"]
     assert 'ACTIONLINT_VERSION: "1.7.12"' in job and "sha256sum -c -" in job
     assert re.search(r'ACTIONLINT_SHA256: "[0-9a-f]{64}"', job)
+
+
+def test_the_flag_is_in_the_pinned_uv():
+    """--no-create-gitignore exists in the uv version both builds pin (checked against `uv build
+    --help` of that version when it is the one installed here)."""
+    import shutil
+    import subprocess
+    pinned = SETUP_UV.search(GATE).group(2)
+    uv = shutil.which("uv")
+    if not uv or pinned not in subprocess.run([uv, "--version"], capture_output=True, text=True).stdout:
+        pytest.skip(f"uv {pinned} not installed here")
+    assert "--no-create-gitignore" in subprocess.run([uv, "build", "--help"], capture_output=True, text=True).stdout

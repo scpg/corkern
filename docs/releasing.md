@@ -53,6 +53,12 @@ version on TestPyPI first, release an `rc` of it.
        corkern --version          # corkern 2.0.0rc1
        uv tool uninstall corkern
 
+   and on two fresh devices in Docker, installed from TestPyPI (no source, no host folder):
+
+       make test-published VERSION=2.0.0rc1 INDEX=testpypi
+
+   After the PyPI upload, the same against pypi.org: `make test-published VERSION=2.0.0rc1`.
+
    `--extra-index-url` is there for the dependencies (typer, rich), which are not on TestPyPI.
    Then compare the SHA-256 sums in the `build` summary and *Review deployments → pypi →
    Approve and deploy*: the same files go to pypi.org. Users get the pre-release only when they

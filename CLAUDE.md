@@ -103,6 +103,7 @@ but only through `read/write_claude_config` and never while v1 is installed).
 | `make test-claude` | real Claude Code 2.1.285; layer 2 (real sessions) only with local `.env` token |
 | `make test-migration` | `migrate/` scripts end to end: real v1 (origin/main) wired by its own sync.sh → export → new machine (failed precondition, mid-run failure + resume) → switch with carry-over (incl. both-changed) → rollback restores v1 exactly; `REAL_V1_EXPORT=…` for real data (local only) |
 | `make test-scenarios` | migrate/ scripts 1 (~55), 2 (15), 3 (14 — real v1 via sync.sh) against messy states (failed stash pops, half-done git commands, leftover stashes, diverged remotes, odd files, reruns) judged by invariants: nothing lost, nothing broken committed, refusals leave v1 unchanged |
+| `make test-published VERSION=… [INDEX=pypi\|testpypi]` | the PUBLISHED package, installed from the index as users do (no source in the image, no host folder mounted): 2 devices sync through a bare remote with the hooks as init-device wires them, signing, secret redaction, trust holds an unsigned push, files == the index's SHA-256 |
 | `make test-teams` (`ROUNDS=N`) | 10 containers, 3 knowledge repos + an intruder, several project repos: planted secrets never reach a remote, untrusted pushes held back, index limit, init-device |
 
 All of these except layer 2, `test-migration` and `test-scenarios` (they need the v1 code) run in CI.

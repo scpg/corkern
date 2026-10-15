@@ -316,6 +316,10 @@ carry_over() {
     if ! git -C "$KR" diff --cached --quiet; then
         run git -C "$KR" commit -q -m "corkern: carry over v1 changes from $host since the export" || return 1
     fi
+    # corkern.conf is shared, so harvest / init-device use a project's path only once this machine
+    # confirmed it: this machine's own v1 registry confirms the slugs whose path is the same here
+    git -C "$RETIRED" show "$end:projects.conf" | c2 add --confirm-listed >> "$report" 2>&1 \
+        || echo "projects NOT confirmed on this machine — run: corkern add --confirm-all" >> "$report"
     sed 's/^/    /' "$report" | tee -a "$LOG"
     setvar carried $((copied + merged + kept + added + localconf))
     if [ "$(getvar carried)" = 0 ] && [ "$skipped" = 0 ]; then ok "nothing to carry over — v1 wrote nothing since the export ($same already identical)"

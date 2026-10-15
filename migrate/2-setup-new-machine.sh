@@ -41,6 +41,8 @@ need "git knows who commits (user.name / user.email)" \
      bash -c "git config user.name && git config user.email"
 need "no corkern v1 on this machine" "this is a v1 machine — use 3-switch-v1-machine.sh here" bash -c "$(declare -f v1_repo v1_command v1_installed); ! v1_installed"
 if done_step install; then ok "knowledge repo already created by an earlier run ($KR)"
+elif [ -f "$KR/.git/corkern/migrate-pending" ]; then
+    ok "unfinished migration at $KR (nothing committed: the secret scan could not run) — this run finishes it"
 else need "no knowledge repo yet at $KR" "move it away, or set CORKERN_MEMORY_DIR to another place" bash -c "! [ -e '$KR' ]"; fi
 for t in git uv ssh-keygen flock timeout; do need "$t installed" "install $t (see README)" command -v "$t"; done
 need "python3 >= 3.10" "install python3 3.10 or newer" py_ok

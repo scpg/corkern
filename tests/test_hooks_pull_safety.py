@@ -204,6 +204,7 @@ def test_h5_planted_revision_named_file_does_not_bypass_verification(devs):  # n
     {"files": {".claude/settings.json": '{"hooks": {}}\n'}},
     {"files": {".mcp.json": '{"mcpServers": {}}\n'}},
     {"files": {"memory/p/.last-sync-pull": "x\n"}},
+    {"files": {"corkern.conf.local": "p:work/private-client\n"}},          # this machine's own file
     {"links": {"memory/p/link.md": "../../../.bashrc"}},
     {"links": {"memory/p/inside.md": "other.md"}},
 ])

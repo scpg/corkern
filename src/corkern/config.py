@@ -3,6 +3,7 @@ import os
 import re
 import sys
 from collections.abc import Iterator
+from dataclasses import dataclass
 from pathlib import Path
 
 from corkern import guard
@@ -229,23 +230,29 @@ def check_format(repo_path: Path) -> None:
             f"{FORMAT_VERSION}.\nUpdate corkern (install.sh) on this machine before using it.")
 
 
-def _parse_conf(text: str, source: str) -> dict[str, Path]:
-    """First line per slug wins (a slug may have one line per device; v1 uses head -1)."""
-    entries: dict[str, Path] = {}
+def _valid_entries(text: str, source: str, warn: bool = True) -> Iterator[tuple[str, str, Path]]:
+    """(slug, raw path, resolved path) for every usable line, in file order (duplicates too)."""
     for slug, raw_path in conf_entries(text):
         if not valid_slug(slug):
-            print(f"warning: {source}: skipping invalid slug {slug!r}", file=sys.stderr)
-            continue
-        if slug in entries:
+            if warn:
+                print(f"warning: {source}: skipping invalid slug {slug!r}", file=sys.stderr)
             continue
         path = resolve_project_path(raw_path)
         if path is None:
             continue
         unsafe = unsafe_path_text(raw_path)
         if unsafe:
-            print(f"warning: {source}: skipping {slug!r}: its path {unsafe}", file=sys.stderr)
+            if warn:
+                print(f"warning: {source}: skipping {slug!r}: its path {unsafe}", file=sys.stderr)
             continue
-        entries[slug] = path
+        yield slug, raw_path, path
+
+
+def _parse_conf(text: str, source: str) -> dict[str, Path]:
+    """First line per slug wins (a slug may have one line per device; v1 uses head -1)."""
+    entries: dict[str, Path] = {}
+    for slug, _, path in _valid_entries(text, source):
+        entries.setdefault(slug, path)
     return entries
 
 
@@ -256,3 +263,90 @@ def _load_projects(repo_path: Path) -> dict[str, Path]:
         if text is not None:
             projects.update(_parse_conf(text, name))
     return projects
+
+
+# ── projects this machine confirmed (audit M8, L1) ──────────────────────────────────────
+# corkern.conf is shared: anyone who can push can point a slug at any folder of this machine.
+# Whatever reads a project's private data (its Claude Code transcripts) or wires its folder
+# uses a slug's path only when this machine confirmed it: `corkern add`, corkern.conf.local
+# (this machine's own file), a per-project "y" in init-device, or migrate for the projects of
+# this machine's own export. Kept like the trust store: in .git/corkern, never synced.
+CONFIRMED_FILE = "projects-confirmed"
+NOT_CONFIRMED = "not confirmed on this machine"
+
+
+def confirmed_file(repo: Path) -> Path:
+    return repo_state_dir(repo) / CONFIRMED_FILE
+
+
+def read_confirmed(repo: Path) -> dict[str, Path]:
+    """slug → path this machine confirmed ("slug<TAB>absolute path" lines; a symlinked file is
+    read as empty)."""
+    out: dict[str, Path] = {}
+    for line in (guard.read_shared(confirmed_file(repo)) or "").splitlines():
+        slug, sep, path = line.partition("\t")
+        if sep and valid_slug(slug) and path.startswith("/") and not unsafe_path_text(path):
+            out[slug] = Path(path)
+    return out
+
+
+def confirm_projects(repo: Path, items: dict[str, Path]) -> None:
+    """Record `items` as confirmed on this machine (0600, never through a symlink)."""
+    if not items:
+        return
+    guard.set_knowledge_repo(repo)
+    confirmed = {**read_confirmed(repo), **items}
+    guard.write_private(confirmed_file(repo), "".join(f"{s}\t{p}\n" for s, p in sorted(confirmed.items())))
+
+
+def same_path(a: Path, b: Path) -> bool:
+    return os.path.realpath(a) == os.path.realpath(b)
+
+
+@dataclass(frozen=True)
+class ProjectCheck:
+    slug: str
+    path: Path | None                 # the path to read from / wire; None: not confirmed
+    candidates: tuple[Path, ...]      # the different paths the registry gives this machine
+    lines: tuple[str, ...]            # the registry lines they come from
+    local: bool = False               # from corkern.conf.local (this machine's own)
+
+    @property
+    def confirmed(self) -> bool:
+        return self.path is not None
+
+    @property
+    def duplicate(self) -> bool:
+        return len(self.candidates) > 1
+
+    def explain(self) -> str:
+        """Why the path is not used, and how to confirm it."""
+        shown = ", ".join(f"'{line}'" for line in self.lines)
+        what = (f"{len(self.candidates)} different paths in corkern.conf ({shown}), none"
+                if self.duplicate else f"corkern.conf says {shown} → {self.candidates[0]}, which is")
+        fixes = "\n".join(f"    corkern add {self.slug} {p}" for p in self.candidates)
+        return (f"'{self.slug}': {what} {NOT_CONFIRMED}.\n"
+                f"  If it is right, run on this machine to confirm:\n{fixes}")
+
+
+def check_projects(repo: Path) -> dict[str, ProjectCheck]:
+    """Every registered slug: which path, if any, this machine confirmed."""
+    local = _parse_conf(guard.read_shared(repo / LOCAL_CONF_FILE) or "", LOCAL_CONF_FILE)
+    shared: dict[str, list[tuple[str, Path]]] = {}
+    for slug, raw, path in _valid_entries(guard.read_shared(repo / CONF_FILE) or "", CONF_FILE, warn=False):
+        group = shared.setdefault(slug, [])
+        if not any(same_path(path, p) for _, p in group):
+            group.append((f"{slug}:{raw}", path))
+    confirmed = read_confirmed(repo)
+    checks: dict[str, ProjectCheck] = {}
+    for slug in sorted({*shared, *local}):
+        group = shared.get(slug, [])
+        lines, candidates = tuple(line for line, _ in group), tuple(p for _, p in group)
+        if slug in local:
+            checks[slug] = ProjectCheck(slug, local[slug], (local[slug],), (f"{slug}:… (corkern.conf.local)",),
+                                        local=True)
+            continue
+        mine = confirmed.get(slug)
+        path = next((p for p in candidates if mine is not None and same_path(p, mine)), None)
+        checks[slug] = ProjectCheck(slug, path, candidates, lines)
+    return checks

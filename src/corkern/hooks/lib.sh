@@ -309,6 +309,8 @@ ck_dangerous() {
     if [ "$mode" = 120000 ]; then echo "symlink"; return 0; fi
     case "$base" in .corkern.lock|.last-sync-*) echo "named like corkern's per-machine state"; return 0 ;; esac
     case "$path" in .claude|.claude/*|.mcp.json) echo "Claude Code configuration"; return 0 ;; esac
+    # this machine's own registry: what it lists counts as confirmed here (config.check_projects)
+    case "${path,,}" in corkern.conf.local) echo "this machine's own file (corkern.conf.local)"; return 0 ;; esac
     return 1
 }
 

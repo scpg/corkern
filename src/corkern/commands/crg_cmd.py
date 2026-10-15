@@ -10,7 +10,7 @@ import typer
 
 from corkern import guard
 from corkern.commands.reminders import fail, slug_for_cwd
-from corkern.config import load_config
+from corkern.config import check_projects, load_config
 
 TOOL = "code-review-graph"
 
@@ -20,14 +20,17 @@ def crg(
     install: bool = typer.Option(False, "--install", help="Install MCP server, hooks, CLAUDE.md"),
 ) -> None:
     """Build/update the project's code-review-graph (fast, AST-only, no LLM)."""
-    _, projects = load_config()
+    repo, projects = load_config()
     slug = slug or slug_for_cwd(projects)
     if not slug:
         fail("Could not detect project slug. Usage: corkern crg [slug] [--install]\n"
              f"    Known slugs: {' '.join(sorted(projects))}")
     if slug not in projects:
         fail(f"Slug '{slug}' not found in corkern.conf")
-    project = projects[slug]
+    check = check_projects(repo.path)[slug]      # corkern.conf is shared: only a path confirmed here
+    if not check.confirmed:
+        fail(f"Refusing to run code-review-graph in the folder of {check.explain()}")
+    project = check.path
     if not project.is_dir():
         fail(f"Project directory not found: {project}")
     guard.assert_safe(project)

@@ -99,6 +99,10 @@ if [ -z "$MODE" ]; then
 fi
 case "$MODE" in
     existing) [ -f "$KR/corkern.conf" ] || die "$KR is not a corkern knowledge repo (no corkern.conf)." ;;
+    # a migration whose secret scan could not run left its files uncommitted: the rerun finishes
+    # it (corkern setup checks that it is the same export)
+    migrate)  if [ -e "$KR" ] && [ -n "$(ls -A -- "$KR")" ] && ! [ -f "$KR/.git/corkern/migrate-pending" ]; then
+                  die "$KR exists and is not empty."; fi ;;
     *)        if [ -e "$KR" ] && [ -n "$(ls -A -- "$KR")" ]; then die "$KR exists and is not empty."; fi ;;
 esac
 

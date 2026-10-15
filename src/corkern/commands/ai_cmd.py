@@ -17,7 +17,7 @@ from corkern.commands import metrics_cmd
 from corkern.commands.reminders import GLOBAL, format_items, open_items, read_todo
 from corkern.commands.secrets_cmd import log_entries
 from corkern.commands.trust_cmd import UNTRUSTED, held_entries
-from corkern.config import conf_entries, load_config, valid_slug
+from corkern.config import NOT_CONFIRMED, check_projects, conf_entries, load_config, valid_slug
 from corkern.knowledge_repo import repo_symlinks
 from corkern.memory_index import usage
 
@@ -143,6 +143,17 @@ def _surfacing_files(repo, slug: str) -> str | None:
     return _box(f"actionable memory files [{slug}]", rows) if rows else None
 
 
+def _unconfirmed_box(checks) -> list[str]:
+    open_ = sorted(s for s, c in checks.items() if not c.confirmed)
+    if not open_:
+        return []
+    return [_box(f"{len(open_)} project(s) {NOT_CONFIRMED}", [
+        f"  {' '.join(open_[:10])}" + (" …" if len(open_) > 10 else ""),
+        "  corkern.conf is shared; until this machine confirms a project's path, corkern does not",
+        "  read its conversations, wire its folder or show its reminders. Tell the user."],
+        f"→ {PROG} add <slug> <path>, or {PROG} init-device to confirm")]
+
+
 def _safety_boxes(repo, slug: str | None) -> list[str]:
     """Things the user must know at session start: held-back commits, removed secrets,
     an index Claude Code no longer loads completely."""
@@ -201,18 +212,21 @@ def session_context() -> None:
     """(For the SessionStart hook) instructions, open reminders, actionable files."""
     repo, projects = load_config()
     cwd = _cwd_from_hook_stdin().resolve()
-    slug = next((s for s, p in projects.items() if p.resolve() == cwd), None)
+    here = next((s for s, p in projects.items() if p.resolve() == cwd), None)
+    checks = check_projects(repo.path)
+    # only a path this machine confirmed brings a project's reminders and files into the session
+    slug = next((s for s, c in checks.items() if c.confirmed and c.path.resolve() == cwd), None)
     text = instructions_text()
     try:
-        devices.update(repo, projects, touch=slug)  # this device's manifest: last seen here
+        devices.update(repo, projects, touch=here)  # this device's manifest: last seen here
     except (OSError, guard.SymlinkInRepoError):
         pass                                       # never break session start
-    if slug:
+    if here:
         try:
-            metrics_cmd.record(repo, slug, text)
+            metrics_cmd.record(repo, here, text)   # a session count, no project content
         except (OSError, guard.SymlinkInRepoError):
             pass                                   # metrics must never break session start
-    parts = [text, *_safety_boxes(repo, slug)]
+    parts = [text, *_safety_boxes(repo, slug), *_unconfirmed_box(checks)]
     for s in [GLOBAL] + ([slug] if slug and slug != GLOBAL else []):
         parts += [box for box in (_todo_box(repo, s), _surfacing_files(repo, s)) if box]
     typer.echo("\n".join(parts))

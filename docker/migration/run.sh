@@ -151,6 +151,9 @@ expect "MEMORY.md has both new lines (a)"   "From old" cat /home/old/.corkern/me
 expect "MEMORY.md has both new lines (b)"   "From new" cat /home/old/.corkern/memory/corkern/MEMORY.md
 expect "project added on v1 carried over"   "newproj:dev/projects/newproj" cat /home/old/.corkern/corkern.conf
 expect "report says what happened"          "BOTH CHANGED" cat /home/old/.local/state/corkern-migration/carry-over-report.txt
+# shellcheck disable=SC2016  # expanded by the inner bash
+assert "this machine's v1 projects are confirmed here (incl. one added during UAT)" bash -c \
+       'f=/home/old/.corkern/.git/corkern/projects-confirmed; for p in "newproj	/home/old/dev/projects/newproj" "webshop	/home/old/dev/projects/webshop" "home	/home/old"; do grep -qxF "$p" "$f" || exit 1; done'
 refuse "IWE: v1's server unregistered"      "No MCP server" as old claude mcp get iwe
 expect "status -v ran clean of problems"    "0 problem(s)\|All good" c2 old status -v
 if [ -f /home/old/dev/corkern-v1-retired/export-import.py ]; then

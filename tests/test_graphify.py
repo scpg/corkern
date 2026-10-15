@@ -5,6 +5,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.conftest import confirm
+
 ROOT = Path(__file__).resolve().parents[1]
 C2 = ROOT / ".venv" / "bin" / "corkern"
 
@@ -27,6 +29,7 @@ def env(tmp_path):
     subprocess.run([str(C2), "init", str(kr)], check=True, capture_output=True,
                    env={**os.environ, "HOME": str(home)})
     (kr / "corkern.conf").write_text("proj:dev/proj\nhome:\ngone:dev/gone\n")
+    confirm(kr, {"proj": proj, "home": home, "gone": home / "dev" / "gone"})   # registered on this machine
     stub_dir = tmp_path / "bin"
     stub_dir.mkdir()
     (stub_dir / "graphify").write_text(STUB)
@@ -129,3 +132,16 @@ def test_guard_allows_only_listed_tools(tmp_path):
     from corkern import guard
     with pytest.raises(ValueError):
         guard.run_tool(tmp_path, ["rm", "-rf", "x"])
+
+
+def test_a_repointed_slug_is_refused_before_graphify_runs(env):
+    """corkern.conf is shared: graphify reads the folder's code (and may send it to an LLM),
+    --install writes its .claude/ — only for a path confirmed on this machine (audit M8, L1)."""
+    private = env["home"] / "private-client"
+    private.mkdir()
+    (env["kr"] / "corkern.conf").write_text("proj:private-client\nhome:\ngone:dev/gone\n")
+    for args in (("proj",), ("proj", "--install")):
+        r = run(env, *args)
+        assert r.returncode != 0
+        assert "not confirmed on this machine" in r.stderr + r.stdout
+    assert not env["log"].exists() and not (private / "graphify-out").exists()

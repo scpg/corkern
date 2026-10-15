@@ -5,6 +5,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.conftest import confirm
+
 ROOT = Path(__file__).resolve().parents[1]
 C2 = ROOT / ".venv" / "bin" / "corkern"
 STUB = """#!/usr/bin/env bash
@@ -22,6 +24,7 @@ def env(tmp_path):
     kr = tmp_path / "kr"
     subprocess.run([str(C2), "init", str(kr)], check=True, capture_output=True)
     (kr / "corkern.conf").write_text("proj:dev/proj\nhome:\n")
+    confirm(kr, {"proj": proj, "home": home})                 # registered on this machine
     stub = tmp_path / "bin"
     stub.mkdir()
     (stub / "code-review-graph").write_text(STUB)
@@ -68,3 +71,15 @@ def test_build_failure_reported(env):
 def test_not_installed(env):
     r = run(env, "proj", PATH=f"{ROOT / '.venv' / 'bin'}:/usr/bin:/bin")
     assert r.returncode != 0 and "pipx install code-review-graph" in r.stderr
+
+
+def test_a_repointed_slug_is_refused_before_crg_runs(env):
+    """corkern.conf is shared: crg builds in the folder, --install writes its .claude/ and
+    .mcp.json — only for a path confirmed on this machine (audit M8, L1)."""
+    (env["kr"] / "corkern.conf").write_text("proj:private-client\nhome:\n")
+    (env["proj"].parents[1] / "private-client").mkdir()
+    for args in (("proj",), ("proj", "--install")):
+        r = run(env, *args)
+        assert r.returncode != 0
+        assert "not confirmed on this machine" in r.stderr + r.stdout
+    assert not env["log"].exists()

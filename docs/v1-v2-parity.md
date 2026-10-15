@@ -12,7 +12,7 @@ Legend: ✅ same behaviour · ⬆️ same + improved · ↔️ intentionally dif
 | v1 | v2 | State | Notes |
 |---|---|---|---|
 | `get-AIinstructions` / `ai` / `context` | same names | ⬆️ | Lists the new commands; SessionStart adds reminders, actionable files, held-back commits, removed secrets, index-limit boxes |
-| `add [slug] [path]` | `add` | ✅ tested | Same registry rules (relative/empty = HOME, first line per slug wins, Windows lines skipped) |
+| `add [slug] [path]` | `add` | ✅ tested | Same registry rules (relative/empty = HOME, first line per slug wins, Windows lines skipped). New: also records the path as confirmed on this machine (`.git/corkern/projects-confirmed`, not synced); `add <slug> <path>` for an existing slug confirms it when the registry lists that path; `--confirm-all` lists every unconfirmed project and asks once |
 | `remove <slug>` | `remove` | ↔️ | v1 deletes the symlink and asks to `rm -rf` the memory; v2 only removes the registry line(s) — memory is kept (delete it with git if wanted) |
 | `list [-s COL]... [-c COLS]` | `list` | ✅ tested | Same columns, `-s`/`-c`, device manifests (v1 format). STATUS on this device = autoMemoryDirectory wiring (v1: symlink); long paths shown whole (v1 cut at 44) |
 | `log [slug]` | `log` | ✅ tested | |
@@ -25,7 +25,7 @@ Legend: ✅ same behaviour · ⬆️ same + improved · ↔️ intentionally dif
 | `graphify [slug] [--install] [--full]` | `graphify` | ✅ | Tested with real graphify 0.8.44 |
 | `crg [--install]` | `crg` | ✅ | Tested with real code-review-graph 2.3.9 |
 | `install` / `sync` (`sync.sh`) | `install.sh` + `init-device` | ⬆️ | See "Setup on a machine" below |
-| `harvest [slug] [--all] [-i]` | `harvest` | ⬆️ | Same flow + v1's `.harvest-manifest`; fixed: crash when choosing among several conversations, silent overwrite of existing memories, project folders with `.`/`_`; new memories are indexed in MEMORY.md; tested with real Claude in Docker |
+| `harvest [slug] [--all] [-i]` | `harvest` | ⬆️ | Same flow + v1's `.harvest-manifest`; fixed: crash when choosing among several conversations, silent overwrite of existing memories, project folders with `.`/`_`; new memories are indexed in MEMORY.md; tested with real Claude in Docker. New: prints the project path first and reads conversations only from a path confirmed on this machine (also `prune`); with several paths for one slug, the confirmed one is used instead of the first line |
 | `refine [slug]` | `refine` | ⬆️ | Bulk file moved to `archive/` instead of deleted |
 | `prune [slug]` | `prune` | ✅ tested | Same rows as v1 (SIZE = real size, v1: disk usage) |
 | `help` | `--help` (every command) | ✅ | |
@@ -46,7 +46,7 @@ Legend: ✅ same behaviour · ⬆️ same + improved · ↔️ intentionally dif
 
 | v1 step | v2 | State |
 |---|---|---|
-| Symlink each project's `~/.claude/projects/<key>/memory` → repo | `init-device`: `autoMemoryDirectory` per project (verified with real Claude Code) | ⬆️ |
+| Symlink each project's `~/.claude/projects/<key>/memory` → repo | `init-device`: `autoMemoryDirectory` per project (verified with real Claude Code); a project not confirmed on this machine, or whose `autoMemoryDirectory` points at another folder, is asked about on its own, never approved by `--yes` | ⬆️ |
 | Symlink `~/.claude/CLAUDE.md` → `global/CLAUDE.md` | `init-device`: `@import` line in the user CLAUDE.md (own content stays) — verified with real Claude Code | ⬆️ |
 | Wire hooks into `~/.claude/settings.json` | `init-device`: merged (other settings/hooks kept, old corkern hooks replaced, backup) — refused while v1 is installed | ✅ |
 | Install `corkern` (+ `corkern-trace`) into `~/.local/bin` | `install.sh` installs `corkern` | ✅ (`corkern-trace` ❌; `CORKERN_HOOK_LOG` traces hooks instead) |

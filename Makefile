@@ -1,6 +1,6 @@
 SHELL := /bin/bash
 
-.PHONY: install-dev test test-docker test-e2e test-claude test-multi test-teams test-migration test-scenarios
+.PHONY: install-dev test test-docker test-e2e test-claude test-multi test-teams test-migration test-scenarios test-published
 
 COMPOSE = docker compose -f docker/compose.test.yml
 
@@ -61,3 +61,11 @@ test-scenarios:
 	docker run --rm -v "$(CURDIR)/tmp.local/v1-code.tar:/v1-code.tar:ro" corkern-migration bash /src/docker/migration/scenarios.sh
 	docker run --rm -v "$(CURDIR)/tmp.local/v1-code.tar:/v1-code.tar:ro" corkern-migration bash /src/docker/migration/scenarios2.sh
 	docker run --rm -v "$(CURDIR)/tmp.local/v1-code.tar:/v1-code.tar:ro" corkern-migration bash /src/docker/migration/scenarios3.sh
+
+# The PUBLISHED package (PyPI / TestPyPI), installed as users do, on fresh devices in Docker:
+# no corkern source in the image, no host folder mounted (real memories are out of reach).
+INDEX ?= pypi
+test-published:
+	@[ -n "$(VERSION)" ] || { echo "usage: make test-published VERSION=2.0.0rc2 [INDEX=pypi|testpypi]"; exit 2; }
+	docker build -q -f docker/Dockerfile.published -t corkern-published . >/dev/null
+	docker run --rm -e VERSION="$(VERSION)" -e INDEX="$(INDEX)" corkern-published

@@ -54,7 +54,7 @@ encrypting, the markers.
 ## Run the gate locally
 
     uv build --no-create-gitignore -o dist \
-      && .venv/bin/python scripts/check_release_version.py dist --version 2.0.0rc3 dist \
+      && .venv/bin/python scripts/check_release_version.py dist --version 2.0.0rc4 dist \
       && .venv/bin/python scripts/release_gate.py dist
 
 The other scanners, with the versions CI uses:

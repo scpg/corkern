@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "corkern"
-version = "2.0.0rc3"
+version = "2.0.0rc4"
 description = "Collective knowledge for Claude Code: syncs its memory across projects, devices and people through a private git repository"
 readme = "PYPI.md"
 license = "MIT"

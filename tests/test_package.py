@@ -59,3 +59,20 @@ def test_wheel_carries_hooks_and_slash_commands(dist):
 def test_built_packages_pass_the_release_gate(dist):
     findings, errors = release_gate.run(dist)
     assert not errors and not findings, "\n".join(errors + [str(f) for f in findings])
+
+
+NOTICE = "**First test release — please do not use it yet.**"
+
+
+def test_pypi_page_warns_while_the_version_is_a_pre_release(dist):
+    """What pypi.org shows is the wheel's METADATA (PYPI.md as the description). Until a proper
+    version exists, every pre-release page opens with the notice and is classified Pre-Alpha."""
+    whl = zipfile.ZipFile(next(dist.glob("*.whl")))
+    meta = whl.read(next(n for n in whl.namelist() if n.endswith(".dist-info/METADATA"))).decode()
+    version = next(line.split(": ", 1)[1] for line in meta.splitlines() if line.startswith("Version: "))
+    if not any(tag in version for tag in ("a", "b", "rc", "dev")):
+        pytest.skip(f"{version} is a final version")
+    head, _, description = meta.partition("\n\n")
+    assert description.lstrip().startswith("> ⚠ " + NOTICE), description[:200]
+    assert "Classifier: Development Status :: 2 - Pre-Alpha" in head
+    assert "Development Status :: 4 - Beta" not in head

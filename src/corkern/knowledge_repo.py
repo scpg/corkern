@@ -30,10 +30,19 @@ def reincluding_lines(gitignore: str) -> list[str]:
     found = []
     for line in gitignore.splitlines():
         line = line.rstrip("\r")
+        while line.endswith(" ") and not line.endswith("\\ "):    # git drops trailing unescaped spaces
+            line = line[:-1]
         pat = line[1:].rstrip("/").rsplit("/", 1)[-1].lower() if line.startswith("!") else ""
         if pat and (is_machine_local(pat) or any(fnmatchcase(probe, pat) for probe in _PROBES)):
             found.append(line)
     return found
+
+
+def shown(text: str, limit: int = 120) -> str:
+    """A teammate's text (a path, a .gitignore line) fit to print to a terminal or into Claude's
+    context: control characters and line breaks become '?', long text is cut."""
+    clean = "".join(c if c.isprintable() else "?" for c in text)
+    return clean if len(clean) <= limit else clean[:limit - 1] + "…"
 
 
 def _born(repo: Path) -> bool:

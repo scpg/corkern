@@ -131,13 +131,13 @@ def _repo_checks(r: Report, kr: Path) -> None:
     if missing:
         r.warn(f"Not excluded in .git/info/exclude: {' '.join(missing)} — machine-local state could be "
                "committed (the next hook run adds them)")
-    from corkern.knowledge_repo import gitignore_reincludes, tracked_machine_local
+    from corkern.knowledge_repo import gitignore_reincludes, shown, tracked_machine_local
     for rel in tracked_machine_local(kr):
-        r.warn(f"tracked per-machine file: {rel} — remove it on the remote (git rm --cached {rel}, commit, "
-               "push); corkern never stages it again, your copy here stays as it is")
+        r.warn(f"tracked per-machine file: {shown(rel)} — remove it on the remote (git rm --cached <path>, "
+               "commit, push); corkern never stages it again, your copy here stays as it is")
     for rel, line in gitignore_reincludes(kr):
-        r.warn(f"{rel}: '{line}' re-includes per-machine files — git would stage this machine's own "
-               "files; corkern unstages them, but remove the line (on the remote)")
+        r.warn(f"{shown(rel)}: '{shown(line, 80)}' re-includes per-machine files — git would stage this "
+               "machine's own files; corkern unstages them, but remove the line (on the remote)")
     if (_git(kr, "config", "--local", "--get", "core.symlinks") or "") != "false":
         r.warn("core.symlinks is not false — a symlink that reaches the repo would be checked out as a "
                "link (the next hook run sets it)")

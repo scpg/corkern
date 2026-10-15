@@ -29,6 +29,7 @@ from corkern import guard
 from corkern.commands.reminders import fail
 from corkern.commands.signing_cmd import SIGNERS, _ask
 from corkern.config import load_config, repo_state_dir
+from corkern.knowledge_repo import shown
 
 HELD = "held"                 # in repo_state_dir: "<sha>\t<reason>" per line (hooks/lib.sh ck_hold)
 UNTRUSTED = "not signed by a device this machine trusts"
@@ -209,7 +210,7 @@ def _show(repo: Path) -> None:
     if content:
         typer.echo(f"\nHeld back from the remote ({len(content)}): content this machine never checks out:")
         for sha, reason in content:
-            typer.echo(f"  ✗ {reason}")
+            typer.echo(f"  ✗ {shown(reason)}")
             for row in _describe_commit(repo, sha, names, claimed):
                 typer.echo(row)
         if any(reason.startswith("re-includes") for _, reason in content):

@@ -270,6 +270,7 @@ ck_reincludes() {
     while IFS= read -r line; do
         line="${line%$'\r'}"
         [[ "$line" == '!'* ]] || continue
+        while [[ "$line" == *' ' && "$line" != *'\ ' ]]; do line="${line% }"; done  # as git reads it
         pat="${line#!}"; pat="${pat%/}"; pat="${pat##*/}"; pat="${pat,,}"
         [ -n "$pat" ] || continue
         ck_is_local "$pat" && { printf '%s' "$line"; return 0; }
@@ -413,6 +414,7 @@ ck_verify_incoming() {
             [ "$(printf '%s' "${path##*/}" | tr '[:upper:]' '[:lower:]')" = .gitignore ] || continue
             nsha=${meta#:}; nsha=${nsha#* * * }; nsha=${nsha%% *}  # ":old new osha nsha S" → nsha
             line=$(ck_reincludes "$nsha") || continue
+            line=$(printf '%s' "$line" | tr -c '[:print:]' '?' | cut -c1-80)   # a teammate's text: data
             why="re-includes this machine's own files ($line)"
         fi
         sha=$(ck_git log -1 --format=%H --end-of-options "$head..$up" -- "$path" 2>/dev/null)

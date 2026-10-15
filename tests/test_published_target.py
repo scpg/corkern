@@ -30,5 +30,7 @@ def test_no_host_folder_is_mounted():
 
 def test_corkern_comes_only_from_the_index():
     run = (ROOT / "docker" / "published" / "run.sh").read_text()
-    assert 'uv tool install -q --refresh "${IDX[@]}" "corkern==$VERSION"' in run
+    assert 'uv tool install -q --refresh --index-url https://pypi.org/simple/ "$SPEC"' in run
+    assert 'SPEC="corkern==$VERSION"' in run and "--wheel-to" in run       # TestPyPI: the checked wheel
+    assert "extra-index-url" not in run and "unsafe-best-match" not in run   # never mix the indexes
     assert "install.sh" not in run and "/src" not in run.replace('"no corkern source', "")

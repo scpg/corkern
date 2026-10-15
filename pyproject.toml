@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "corkern"
-version = "2.0.0rc1"
+version = "2.0.0rc2"
 description = "Collective knowledge for Claude Code: syncs its memory across projects, devices and people through a private git repository"
 readme = "PYPI.md"
 license = "MIT"
@@ -13,7 +13,7 @@ authors = [{ name = "SCPG" }]
 requires-python = ">=3.10"
 keywords = ["claude", "claude-code", "memory", "sync", "git", "knowledge-base", "ai"]
 classifiers = [
-    "Development Status :: 4 - Beta",
+    "Development Status :: 2 - Pre-Alpha",
     "Environment :: Console",
     "Intended Audience :: Developers",
     "Operating System :: POSIX :: Linux",

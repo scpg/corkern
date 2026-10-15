@@ -13,7 +13,8 @@ every machine you use reads from and writes to, so what was learned in one proje
 is there the next time — anywhere. Sharing it across a team is the next idea, not yet a tested
 feature (see [Why this exists](#why-this-exists)).
 
-> Status: release candidate 2.0.0rc1. Use it at your own risk — see
+> Status: 2.0.0rc2, the first release on PyPI — published only to try the release process; please
+> do not use it yet. A proper version is planned for the coming weeks. See
 > [Status and scope](#status-and-scope).
 
 ## Install — once per machine

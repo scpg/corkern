@@ -1,3 +1,7 @@
+> ⚠ **First test release — please do not use it yet.**
+> This is corkern's first upload to PyPI, published only to try the release process. It is
+> not meant for use. A proper version is planned for the coming weeks.
+
 # corkern
 
 **Collective knowledge for Claude Code — across projects, devices and people.**

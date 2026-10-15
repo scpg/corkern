@@ -121,6 +121,28 @@ for d in $alpha; do
     fi
 done
 
+section "per-machine files never reach a remote, whatever .gitignore says (L8)"
+attack4=$(cat $SHARED/attack4-sha 2>/dev/null)
+assert "the intruder pushed a .gitignore that re-includes per-machine files" \
+    bash -c "git -C $SHARED/alpha.git show main:.gitignore | grep -qx '!corkern.conf.local'"
+names_all=$(for repo in alpha beta gus; do git -C "$SHARED/$repo.git" log --all --name-only --format=; done)
+# the intruder's own wave-2 push (state-named links) is not a victim's file
+intruder_names=$(git -C $SHARED/alpha.git log --all --author=mallory --name-only --format= | sort -u)
+local_names=$(grep -iE '(^|/)(corkern\.conf\.local|\.corkern\.lock|\.last-sync-[^/]*|[^/]*\.bak-[^/]*|\.distill-prompt\.md)$' <<< "$names_all" \
+              | sort -u | grep -vxF -f <(printf '%s\n' "$intruder_names") || true)
+assert "no victim's per-machine file in any remote's history (any case, any depth)" test -z "$local_names"
+assert "…nor their content" bash -c "! for repo in alpha beta gus; do git -C $SHARED/\$repo.git log --all -p --format=; done \
+    | grep -qE -- '-(private-paths|backup)\$'"
+[ -n "$local_names" ] && while IFS= read -r n; do echo "     │ $n"; done <<< "$local_names"
+for d in $alpha; do
+    if grep -qF "$attack4" "$RES/$d-held.txt" && grep -q "re-includes this machine's own files" "$RES/$d-held.txt" \
+        && in_out "$d-trust.txt" "re-includes this machine's own files"; then
+        ok "$d: the .gitignore commit is held; corkern trust explains it"
+    else
+        bad "$d"; grep -F "$attack4" "$RES/$d-held.txt" | sed 's/^/     │ /'
+    fi
+done
+
 section "a slug the intruder pointed at a private folder (M8, L1)"
 assert "the intruder registered team-notes:private-client in alpha's corkern.conf" \
     bash -c "git -C $SHARED/alpha.git show main:corkern.conf | grep -qx 'team-notes:private-client'"

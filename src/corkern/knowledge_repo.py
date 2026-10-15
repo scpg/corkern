@@ -1,14 +1,88 @@
 """Knowledge repo template and initialisation."""
 from __future__ import annotations
 
+from fnmatch import fnmatchcase
 from pathlib import Path
 
 from corkern import guard
 from corkern.config import CONF_FILE
 
 # Per-machine files that must never be synced, whatever the synced .gitignore says: they go to
-# .git/info/exclude (same list as hooks/lib.sh CK_EXCLUDES — tests check they match)
+# .git/info/exclude (same list as hooks/lib.sh CK_EXCLUDES — tests check they match). A
+# .gitignore in the work tree wins over that file, so staging decides (`stage`, ck_unstage_local).
 MACHINE_LOCAL = ("corkern.conf.local", ".corkern.lock", ".last-sync-*", "*.bak-*", ".distill-prompt.md")
+_PROBES = ("corkern.conf.local", ".corkern.lock", ".last-sync-pull", "x.bak-1", ".distill-prompt.md")
+
+
+def is_machine_local(rel: str) -> bool:
+    """`rel`'s file name is a per-machine name — any case, at any depth (hooks: ck_is_local)."""
+    name = rel.rsplit("/", 1)[-1].lower()
+    return any(fnmatchcase(name, p.lower()) for p in MACHINE_LOCAL)
+
+
+def machine_local_pathspecs() -> list[str]:
+    """Pathspecs for every per-machine name that no .gitignore can defeat."""
+    return [f":(glob,icase)**/{p}" for p in MACHINE_LOCAL]
+
+
+def reincluding_lines(gitignore: str) -> list[str]:
+    """The `!` lines of a .gitignore that would re-include a per-machine name (hooks: ck_reincludes)."""
+    found = []
+    for line in gitignore.splitlines():
+        line = line.rstrip("\r")
+        pat = line[1:].rstrip("/").rsplit("/", 1)[-1].lower() if line.startswith("!") else ""
+        if pat and (is_machine_local(pat) or any(fnmatchcase(probe, pat) for probe in _PROBES)):
+            found.append(line)
+    return found
+
+
+def _born(repo: Path) -> bool:
+    try:
+        guard.run_git(repo, "rev-parse", "--verify", "-q", "HEAD")
+        return True
+    except guard.GitError:
+        return False
+
+
+def stage(repo: Path, *args: str) -> None:
+    """`git add ARGS`, then never a per-machine file: unstaged right away, and if one is still
+    staged, everything is unstaged and GitError is raised (nothing gets committed)."""
+    guard.run_git(repo, "add", *args)
+    specs = machine_local_pathspecs()
+    born = _born(repo)
+    if born:
+        guard.run_git(repo, "reset", "-q", "--", *specs)
+        staged = guard.run_git(repo, "diff", "--cached", "--name-only", "--no-renames", "-z").stdout
+    else:                                     # first commit: everything in the index is staged
+        guard.run_git(repo, "rm", "-r", "-q", "--cached", "--ignore-unmatch", "--", *specs)
+        staged = guard.run_git(repo, "ls-files", "-z").stdout
+    bad = sorted(p for p in staged.split("\0") if p and is_machine_local(p))
+    if bad:
+        guard.run_git(repo, *(("reset", "-q") if born else ("rm", "-r", "-q", "--cached", ".")))
+        raise guard.GitError(f"not committed: per-machine file(s) staged in {repo}: {', '.join(bad)}")
+
+
+def tracked_machine_local(repo: Path) -> list[str]:
+    """Per-machine files git tracks (committed by an older version or a teammate)."""
+    try:
+        out = guard.run_git(repo, "ls-files", "-z", "--", *machine_local_pathspecs()).stdout
+    except guard.GitError:
+        return []
+    return sorted(p for p in out.split("\0") if p)
+
+
+def gitignore_reincludes(repo: Path) -> list[tuple[str, str]]:
+    """(.gitignore path, `!` line) for every line in the work tree that re-includes a per-machine name."""
+    try:
+        listed = guard.run_git(repo, "ls-files", "-z", "-co", "--exclude-standard", "--",
+                               ":(glob,icase)**/.gitignore").stdout.split("\0")
+    except guard.GitError:
+        return []
+    found = []
+    for rel in sorted({p for p in listed if p}):
+        text = guard.read_shared(repo / rel)
+        found += [(rel, line) for line in reincluding_lines(text or "")]
+    return found
 
 # The knowledge repo's own format version. Every corkern reads it first: a newer one than it
 # knows is refused ("update corkern"), an older one is upgraded step by step (none yet).
@@ -158,6 +232,6 @@ def init_repo(path: Path) -> bool:
     if not (target / ".git").exists():
         guard.run_git(target, "init", "-q", "-b", "main")
     harden(target)
-    guard.run_git(target, "add", "--", *TEMPLATE)
+    stage(target, "--", *TEMPLATE)
     guard.run_git(target, "commit", "-q", "-m", INITIAL_COMMIT_MSG)
     return True

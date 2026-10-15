@@ -19,6 +19,7 @@
 #           plain git: symlinks at corkern's state paths and in memory/ pointing at the
 #           victims' ~/.bashrc and ~/.ssh/authorized_keys, a file named HEAD..@{upstream},
 #           .claude/settings.json and .mcp.json; alpha devices pull and keep working locally
+#           wave 4: a .gitignore that re-includes per-machine files (!corkern.conf.local, …, L8)
 #   report  outputs of status / trust / secrets / session context → the judge (judge.sh)
 set -uo pipefail
 DEV="$1"
@@ -93,6 +94,12 @@ if [ "$ROLE" = intruder ]; then
     pgp=$(git -C "$KR" hash-object -t commit -w /tmp/pgp-commit) && git -C "$KR" update-ref refs/heads/main "$pgp"
     git -C "$KR" push -q 2>>"$LOG" || { git -C "$KR" pull -q --rebase --no-gpg-sign; git -C "$KR" push -q; }
     git -C "$KR" rev-parse HEAD > "$SHARED/attack3-sha"
+    # wave 4 — git gives a .gitignore priority over .git/info/exclude: negations would make the
+    # victims' `git add -A` stage their own per-machine files (audit L8)
+    printf '!corkern.conf.local\n!CORKERN.CONF.LOCAL\n!*.bak-*\n!.last-sync-*\n!.corkern.lock\n!.distill-prompt.md\n' >> "$KR/.gitignore"
+    git -C "$KR" add -- .gitignore && git -C "$KR" -c commit.gpgsign=false commit -qm "chore: gitignore"
+    git -C "$KR" push -q 2>>"$LOG" || { git -C "$KR" pull -q --rebase --no-gpg-sign; git -C "$KR" push -q; }
+    git -C "$KR" rev-parse HEAD > "$SHARED/attack4-sha"
     note "attack pushed: $(git -C "$KR" log --oneline -4 | tr '\n' ' ')"
     touch "$FLAGS/attacked"
     wait_for "$FLAGS/verified"; exit 0
@@ -229,6 +236,10 @@ for r in $(seq "$ROUNDS"); do
     esac
     sleep "0.$(( RANDOM % 4 ))"
 done
+
+# per-machine files in the work tree (any case, any depth): never on a remote (audit L8)
+echo "$DEV-private-paths" > "$KR/CORKERN.CONF.LOCAL"; echo "$DEV-backup" > "$KR/notes.bak-1"
+mkdir -p "$M/$DEV" && echo x > "$M/$DEV/.last-sync-pull" && echo x > "$M/$DEV/old.BAK-2"
 
 # ── sync ────────────────────────────────────────────────────────────────────────────────
 idle; fire corkern-push

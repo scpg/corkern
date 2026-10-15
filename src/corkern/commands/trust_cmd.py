@@ -14,7 +14,8 @@ trust store in `.git/corkern/trusted_signers` (never synced), filled only by the
 confirming a fingerprint here. With a trust store present, the hooks integrate an incoming
 commit only if a trusted key signed it; everything else waits, listed in `.git/corkern/held`.
 The same list holds commits whose content this machine never checks out (symlinks, files named
-like corkern's state, Claude Code configuration) — those are fixed on the remote, not accepted.
+like corkern's state, Claude Code configuration, a .gitignore that re-includes this machine's own
+files) — those are fixed on the remote, not accepted.
 """
 from __future__ import annotations
 
@@ -211,6 +212,10 @@ def _show(repo: Path) -> None:
             typer.echo(f"  ✗ {reason}")
             for row in _describe_commit(repo, sha, names, claimed):
                 typer.echo(row)
+        if any(reason.startswith("re-includes") for _, reason in content):
+            typer.echo("  A .gitignore line starting with '!' that matches corkern.conf.local, .last-sync-*,\n"
+                       "  .corkern.lock, *.bak-* or .distill-prompt.md would make git stage this machine's own\n"
+                       "  files (a .gitignore wins over .git/info/exclude): remove that line on the remote.")
         typer.echo("  These cannot be accepted. Remove them on the remote (git rm <path>, commit, push) —\n"
                    "  everything else is integrated then — and find out who pushed them.")
     held = _held(repo)

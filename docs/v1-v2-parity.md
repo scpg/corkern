@@ -52,7 +52,7 @@ Legend: ✅ same behaviour · ⬆️ same + improved · ↔️ intentionally dif
 | Install `corkern` (+ `corkern-trace`) into `~/.local/bin` | `install.sh` installs `corkern` | ✅ (`corkern-trace` ❌; `CORKERN_HOOK_LOG` traces hooks instead) |
 | Slash commands `~/.claude/commands/corkern-*.md` (distill, harvest, memory-prune, status) | installed by `init-device` (`/corkern-status` verified with real Claude Code) | ✅ |
 | Device manifest `.devices/<host>` (projects + last seen) | written by `init-device`, stamped at session start | ✅ |
-| Per-machine paths `projects.local.conf` | `corkern.conf.local` (same format) | ✅ — not migrated (machine-local by design) |
+| Per-machine paths `projects.local.conf` | `corkern.conf.local` (same format) | ✅ — not migrated (machine-local by design). Never committed, whatever a `.gitignore` says: every commit corkern makes unstages it (and `.last-sync-*`, `.corkern.lock`, `*.bak-*`, `.distill-prompt.md`; any case, any folder), a pull holds a `.gitignore` that re-includes them, and one that is already tracked is never staged again (status: "tracked per-machine file") |
 | Back up a real memory dir before linking it | not needed (no symlinks) | ↔️ |
 
 ## Other v1 pieces

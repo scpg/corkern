@@ -83,9 +83,13 @@ but only through `read/write_claude_config` and never while v1 is installed).
   that rewrites files on disk runs only in SessionStart/Stop (Claude idle); background is push-only.
 - Stop integrates at most every 10 min and makes no network call when idle.
 - Per-machine sync state (lock, `last-sync-*`, `held`, trust store) lives in `.git/corkern/`, never in
-  the work tree; per-machine names go to `.git/info/exclude`; `core.symlinks=false`. Pull resolves
-  the upstream SHA once, inspects merge-base..SHA (symlinks, state names, `.claude/`, `.mcp.json`
-  → held) and fails closed; hooks never write to a work-tree path through a shell redirection.
+  the work tree; per-machine names (`CK_EXCLUDES` = `MACHINE_LOCAL`) go to `.git/info/exclude`, but a
+  `.gitignore` wins over that file, so staging decides: after every `git add` (hooks, migrate, init,
+  migrate/3) they are unstaged by `:(glob,icase)**/` pathspecs, a commit still holding one is refused,
+  a tracked one is skip-worktree (status/session context: "tracked per-machine file"); `core.symlinks=false`.
+  Pull resolves the upstream SHA once, inspects merge-base..SHA (symlinks, state names, `.claude/`,
+  `.mcp.json`, a `.gitignore` whose `!` line re-includes a per-machine name → held) and fails closed;
+  hooks never write to a work-tree path through a shell redirection.
 - Empty remote: first push does `push -u origin HEAD`.
 
 ## Testing

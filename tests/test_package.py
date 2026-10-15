@@ -61,7 +61,7 @@ def test_built_packages_pass_the_release_gate(dist):
     assert not errors and not findings, "\n".join(errors + [str(f) for f in findings])
 
 
-NOTICE = "**First test release — please do not use it yet.**"
+NOTICE = "**Test release — please do not use it yet.**"
 
 
 def test_pypi_page_warns_while_the_version_is_a_pre_release(dist):

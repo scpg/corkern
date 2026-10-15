@@ -1,6 +1,6 @@
-> ⚠ **First test release — please do not use it yet.**
-> This is corkern's first upload to PyPI, published only to try the release process. It is
-> not meant for use. A proper version is planned for the coming weeks.
+> ⚠ **Test release — please do not use it yet.**
+> This is one of corkern's first uploads to PyPI, published only to try the release process. It
+> is not meant for use. A proper version is planned for the coming weeks.
 
 # corkern
 
@@ -67,9 +67,10 @@ a symlink is never written through.
 
 ## Status
 
-corkern was built by one developer for their own machines. Team use has only been simulated (10
-Docker containers, three teams, one untrusted intruder). Use it at your own risk; when something
-goes wrong, corkern reports it and keeps both versions rather than overwriting.
+corkern was built by one developer for his own machines and personal use, but it might be useful
+for others too. Team use has only been simulated (10 Docker containers, three teams, one untrusted
+intruder). Use it at your own risk; when something goes wrong, corkern tries its best to report it
+and keeps both versions rather than overwriting.
 
 Memories leave the machine only through git, to the knowledge repository you configure — and,
 when you run `corkern distill` or `corkern harvest`, to Claude for the analysis.

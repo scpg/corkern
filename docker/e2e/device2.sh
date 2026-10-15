@@ -19,6 +19,8 @@ export CORKERN_MEMORY_DIR="$HOME/.corkern"
 expect "device-1 project resolves under bob's HOME"  "webshop .*/home/bob/dev/projects/webshop .*not wired" corkern list
 expect "project added on device 1 is portable"       "newone .*/home/bob/dev/projects/newone" corkern list
 expect "project absent on this device shows ✗"       "toolbox .*no path" corkern list
+expect "a cloned registry is not confirmed here yet"  "webshop: not confirmed on this machine" corkern list
+assert "…status says how to confirm"                 bash -c "corkern status | grep -q 'not confirmed on this machine — corkern add <slug> <path>'"
 expect "memory from device 1 present"                 "v1 state for alice" cat "$HOME/.corkern/memory/corkern/project_state.md"
 assert "device-1 removal synced"                      bash -c "! grep -q '^missing:' '$HOME/.corkern/corkern.conf'"
 
@@ -26,6 +28,7 @@ section "per-device override"
 mkdir -p /tmp/bob-webshop
 echo "webshop:/tmp/bob-webshop" > "$HOME/.corkern/corkern.conf.local"
 expect "corkern.conf.local overrides"   "webshop .*/tmp/bob-webshop .*not wired" corkern list
+assert "…this machine's own override counts as confirmed" bash -c "! corkern list | grep -q 'webshop: not confirmed'"
 assert "override stays local (gitignored)" test -z "$(git -C "$HOME/.corkern" status --porcelain)"
 
 section "bob's v1 untouched"

@@ -63,15 +63,12 @@ def _rows(repo, projects) -> list[tuple[str, ...]]:
     me = device_name()
     manifests = devices.read_all(repo)
     names = list(manifests) + ([me] if me not in manifests else [])
-    checks = check_projects(repo.path)
     rows = []
     for slug in devices.ordered_slugs(repo, projects):
         for device in names:
             if device == me:
                 last = manifests.get(me, {}).get(slug, ("", ""))[0]
-                c = checks.get(slug)
-                status = ("unconfirmed" if c and not c.confirmed
-                          else local_status(projects[slug], repo.memory_dir / slug))
+                status = local_status(projects[slug], repo.memory_dir / slug)
                 rows.append((slug, f"{device} (local)", "1", str(projects[slug]), status, last))
             elif slug in manifests[device] and manifests[device][slug][1]:
                 last, path = manifests[device][slug]

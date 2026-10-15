@@ -6,7 +6,7 @@ A release is a pushed tag `v<version>`. `.github/workflows/release.yml` does the
 |---|---|
 | `check` | `scripts/check_release_version.py tag`: fails unless the tag's commit is reachable from `origin/main`, the tag equals `v` + `[project] version` in `pyproject.toml`, that equals `__version__` in `src/corkern/__init__.py`, and the version is PEP 440 in normalized form without a local part (`+...`). Decides pre-release (`a`, `b`, `rc`, `dev`) or final. |
 | `gate` | the same release gate as CI (`release-gate.yml`, see [release-gate.md](release-gate.md)) |
-| `build` | `uv build` **once**; `check_release_version.py dist` (exactly `corkern-<version>.tar.gz` + `corkern-<version>-py3-none-any.whl`); `release_gate.py` on exactly those files; SHA-256 sums in the job summary; uploads them as the artifact `dist`. These files are published; nothing is rebuilt later. |
+| `build` | `uv build --no-create-gitignore` **once** (no `dist/.gitignore`; the CI gate builds the same way); `check_release_version.py dist` (exactly `corkern-<version>.tar.gz` + `corkern-<version>-py3-none-any.whl`); `release_gate.py` on exactly those files; SHA-256 sums in the job summary; uploads them as the artifact `dist`. These files are published; nothing is rebuilt later. |
 | `publish-testpypi` | pre-releases only; environment `testpypi`; publishes the artifact to test.pypi.org |
 | `publish-pypi` | environment `pypi`, which **waits for the owner's approval** (required reviewer); publishes the same artifact to pypi.org. A final version: directly (`publish-testpypi` is skipped). A pre-release: only after `publish-testpypi` succeeded |
 

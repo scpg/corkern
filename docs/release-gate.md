@@ -11,6 +11,7 @@ publishes ([releasing.md](releasing.md)).
 
 | Step | Fails when |
 |---|---|
+| `uv build --no-create-gitignore -o dist`, then `check_release_version.py dist` (version from `pyproject.toml`) | `dist/` holds anything but this version's sdist and wheel: the same build and check as `release.yml`'s `build` job (same pinned `setup-uv` and uv version, `tests/test_release_workflow.py`), so a pull request finds what would stop a release. Without the flag uv writes `dist/.gitignore`, which stopped the first 2.0.0rc1 run at `build` |
 | `scripts/release_gate.py dist` | a file in the wheel or sdist lies outside the allow-list (shared with `tests/test_package.py`), or an sdist member is a link or device |
 | | a text file matches one of corkern's own secret patterns (`corkern.secret_scan`) |
 | | a text file contains a private marker (see below) |
@@ -52,7 +53,9 @@ encrypting, the markers.
 
 ## Run the gate locally
 
-    uv build -o dist && .venv/bin/python scripts/release_gate.py dist
+    uv build --no-create-gitignore -o dist \
+      && .venv/bin/python scripts/check_release_version.py dist --version 2.0.0rc1 dist \
+      && .venv/bin/python scripts/release_gate.py dist
 
 The other scanners, with the versions CI uses:
 

@@ -60,9 +60,11 @@ jobs:
           version: "0.11.23"
           enable-cache: false
       - name: Build sdist + wheel (once; these exact files are published)
+        # --no-create-gitignore: uv otherwise writes dist/.gitignore, which the strict dist check
+        # (rightly) refuses — release-gate.yml builds the same way on every pull request
         run: |
           uv venv --python 3.12
-          uv build -o dist
+          uv build --no-create-gitignore -o dist
       - name: dist holds exactly this version's sdist + wheel
         run: .venv/bin/python scripts/check_release_version.py dist --version "$VERSION" dist
       - name: Release gate on the files that will be published

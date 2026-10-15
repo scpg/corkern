@@ -42,6 +42,8 @@ check "seed: 2-setup-new-machine.sh publishes the knowledge repo" \
       asu new bash /home/new/corkern-migration/2-setup-new-machine.sh --remote "$P/kr.git" --code-repo /opt/code --yes
 if [ "$FAIL" -gt 0 ]; then tail -30 /home/new/.local/state/corkern-migration/2-setup-new-machine.log; finish; exit 1; fi
 chmod -R a+rwX "$P"
+BASE=$(git -C "$P/kr.git" show HEAD:.corkern-migration | sed -n 's/^v1_export_commit=//p')
+AWS="AKIA""ABCDEFGHIJ234567"     # the fixtures' fake AWS key, split so this file holds no literal
 
 # world NAME — a new v1 machine "user" (own copies of both remotes), v1 cloned and wired by sync.sh
 N=0
@@ -63,6 +65,16 @@ want()  { FACTS+=("$@"); }
 wiring() { asu "$U" bash -c "cat ~/.claude/settings.json 2>/dev/null; find ~/.claude ~/.local/bin -maxdepth 3 -type l -printf '%p -> %l\n' 2>/dev/null | sort" | sha256sum; }
 snap()  { WIRING_BEFORE=$(wiring); }
 run3()  { asu "$U" bash "$MIG/3-switch-v1-machine.sh" --remote "$W/kr.git" --code-repo /opt/code --yes > "$W/output" 2>&1; RC=$?; }
+
+# krw "shell" — a teammate commits to this world's published knowledge repo
+krw()   { asu "$U" bash -c "set -e; rm -rf '$W/krw'; git clone -q '$W/kr.git' '$W/krw'; cd '$W/krw'; $1; git add -A; git commit -qm teammate; git push -q"; }
+kr_base()    { krw "sed -i 's|^v1_export_commit=.*|v1_export_commit=$1|' .corkern-migration"; }
+# local_base SHA — this machine ran script 1 (its state holds the export point)
+local_base() { asu "$U" bash -c "mkdir -p ~/.local/state/corkern-migration && printf 'var:v1_export_commit=%s\n' '$1' > ~/.local/state/corkern-migration/1-export-v1.state"; }
+# rerun_carry_over — the carry-over step runs again (as after a crash before it was recorded)
+rerun_carry_over() { asu "$U" sed -i '/^step:carry-over=/d' "/home/$U/.local/state/corkern-migration/3-switch-v1-machine.state"; run3; }
+# own_lines FILE LINE... — every LINE is in FILE exactly once, as a line of its own
+own_lines() { local f="$1" l; shift; for l in "$@"; do [ "$(grep -cxF -- "$l" "$f")" = 1 ] || { echo "not once on its own line: $l" >&2; return 1; }; done; }
 
 fail() { bad "$NAME: $1"; FAILED_HERE=1; }
 verdict() {   # verdict ok|refuse "what this scenario is" [pattern]
@@ -123,6 +135,86 @@ world kr-gone;     snap; asu "$U" bash "$MIG/3-switch-v1-machine.sh" --remote /n
 world push-fails;  v1 "echo FACT-pf > memory/webshop/pf.md"; want FACT-pf; chmod -R a-w "$W/kr.git"; snap; run3
                    verdict refuse "knowledge repo rejects the push (mid-run)" "resumes here"
                    chmod -R u+w "$W/kr.git"; run3; verdict ok "…rerun resumes and finishes"
+
+section "carry-over: the export point is verified (audit L15)"
+world base-head;    kr_base HEAD; snap; run3; verdict refuse "synced export point 'HEAD'" "export point"
+assert "base-head: v1 not retired" test -d "$V1/.git"
+world base-option;  kr_base --output=x; snap; run3; verdict refuse "synced export point '--output=x'" "export point"
+assert "base-option: v1 not retired" test -d "$V1/.git"
+world base-foreign; kr_base "$(v1 'git commit-tree -m foreign HEAD^{tree}')"; snap; run3
+                    verdict refuse "export point not an ancestor of v1's history" "not an ancestor"
+assert "base-foreign: v1 not retired" test -d "$V1/.git"
+world base-unknown; kr_base 0123456789abcdef0123456789abcdef01234567; snap; run3
+                    verdict refuse "export point this v1 does not have" "fetch v1 first"
+assert "base-unknown: v1 not retired" test -d "$V1/.git"
+world base-differs; local_base "$(v1 'git commit-tree -m mine HEAD^{tree}')"; snap; run3
+                    verdict refuse "script 1's export point here differs from the synced one" "differs.*$BASE"
+assert "base-differs: v1 not retired" test -d "$V1/.git"
+world base-matches; local_base "$BASE"; v1 "echo FACT-lm > memory/webshop/lm.md && git add -A && git commit -qm lm"; want FACT-lm
+                    snap; run3; verdict ok "script 1's export point here matches the synced one"
+world nothing-new;  snap; run3; verdict ok "v1 wrote nothing since the export"
+assert "nothing-new: says there was nothing to carry over" grep -q "nothing to carry over" "$W/output"
+assert "nothing-new: does not call differences expected" bash -c "! grep -q 'Differing files are expected' '$W/output'"
+
+section "carry-over: never writes through a symlink (audit L13)"
+world symlink;      v1 "printf -- '- [Late](FACT-late.md)\n' >> memory/corkern/MEMORY.md && mkdir -p memory/newslug && echo FACT-ns > memory/newslug/ns.md && git add -A && git commit -qm late"
+                    want FACT-late FACT-ns; snap; run3; verdict ok "first switch (before the links appear)"
+# the work tree gets links (e.g. a clone made by an older corkern, before core.symlinks=false) and
+# the carry-over runs again: MEMORY.md -> a file outside, memory/newslug -> a folder outside
+asu "$U" bash -c "set -e; printf 'outside\n' > ~/outside.txt; mkdir -p ~/outside-dir; cd '$KR'
+  rm memory/corkern/MEMORY.md && ln -s ~/outside.txt memory/corkern/MEMORY.md
+  rm -r memory/newslug && ln -s ~/outside-dir memory/newslug
+  git add -A && git commit -qm links"
+OUTSIDE=$(asu "$U" bash -c 'sha256sum ~/outside.txt; ls -A ~/outside-dir')
+rerun_carry_over
+assert "symlink: the rerun finishes" test "$RC" = 0
+assert "symlink: the files outside the repo are unchanged" test "$(asu "$U" bash -c 'sha256sum ~/outside.txt; ls -A ~/outside-dir')" = "$OUTSIDE"
+assert "symlink: both skips are reported" bash -c "grep -q 'skipped (symlink.*memory/corkern/MEMORY.md' '$W/output' && grep -q 'skipped (symlink.*memory/newslug/ns.md' '$W/output'"
+assert "symlink: v1 unchanged (retired, every fact kept)" bash -c "grep -rqF FACT-late /home/$U/dev/corkern-v1-retired/memory && grep -rqF FACT-ns /home/$U/dev/corkern-v1-retired/memory"
+world symlink-remote; krw "rm -r memory/webshop && ln -s /home/$U/outside-dir memory/webshop"
+                    v1 "echo FACT-sr > memory/webshop/sr.md && git add -A && git commit -qm sr"
+                    asu "$U" mkdir -p "/home/$U/outside-dir"; snap; run3
+assert "symlink-remote: the switch finishes" test "$RC" = 0
+assert "symlink-remote: nothing written outside the repo" test -z "$(asu "$U" ls -A "/home/$U/outside-dir")"
+assert "symlink-remote: the cloned link is no link (core.symlinks=false)" test ! -L "$KR/memory/webshop"
+assert "symlink-remote: the skip is reported" grep -q "skipped (.*memory/webshop/sr.md" "$W/output"
+
+section "carry-over: no lost last line (audit L16)"
+world no-newline;   krw "printf -- '- [KR only](FACT-kr-only.md)' >> memory/corkern/MEMORY.md && printf 'krproj:/mnt/c/FACT-krp' >> corkern.conf"
+                    v1 "printf -- '- [V1 one](FACT-nl1.md)\n- [V1 last](FACT-nl-last.md)' >> memory/corkern/MEMORY.md \
+                        && printf 'p1:/mnt/c/FACT-p1\np2:/mnt/c/FACT-p2' >> projects.conf && git add -A && git commit -qm nl \
+                        && printf 'webshop:/mnt/c/FACT-l1\ncrm:/mnt/c/FACT-l2' > projects.local.conf"
+                    want FACT-kr-only FACT-nl1 FACT-nl-last FACT-p1 FACT-p2 FACT-l1 FACT-l2; snap; run3
+                    verdict ok "MEMORY.md, projects.conf, projects.local.conf without a final newline (both sides)"
+assert "no-newline: MEMORY.md — every line, each on its own" own_lines "$KR/memory/corkern/MEMORY.md" \
+       "- [State](state.md)" "- [KR only](FACT-kr-only.md)" "- [V1 one](FACT-nl1.md)" "- [V1 last](FACT-nl-last.md)"
+assert "no-newline: corkern.conf — every line, each on its own" own_lines "$KR/corkern.conf" \
+       "krproj:/mnt/c/FACT-krp" "p1:/mnt/c/FACT-p1" "p2:/mnt/c/FACT-p2"
+assert "no-newline: corkern.conf.local — every line, each on its own" own_lines "$KR/corkern.conf.local" \
+       "webshop:/mnt/c/FACT-l1" "crm:/mnt/c/FACT-l2"
+assert "no-newline: the report says combined" grep -q "combined lines: memory/corkern/MEMORY.md" "$W/output"
+asu "$U" bash -c "truncate -s -1 '$KR/corkern.conf.local' && printf '\nwiki:/mnt/c/FACT-l3' >> /home/$U/dev/corkern-v1-retired/projects.local.conf"
+SUMS=$(sha256sum "$KR/memory/corkern/MEMORY.md" "$KR/corkern.conf")
+rerun_carry_over
+assert "no-newline: rerun finishes" test "$RC" = 0
+assert "no-newline: rerun adds nothing to MEMORY.md / corkern.conf" test "$(sha256sum "$KR/memory/corkern/MEMORY.md" "$KR/corkern.conf")" = "$SUMS"
+assert "no-newline: rerun — corkern.conf.local without a final newline gets the new line on its own" \
+       own_lines "$KR/corkern.conf.local" "webshop:/mnt/c/FACT-l1" "crm:/mnt/c/FACT-l2" "wiki:/mnt/c/FACT-l3"
+
+section "carry-over: scanned for secrets (audit L14)"
+world secret;       v1 "echo 'FACT-sec deploy with $AWS' > memory/webshop/sec.md && git add -A && git commit -qm sec"; want FACT-sec
+                    snap; run3; verdict ok "a secret written in v1 after the export"
+assert "secret: carried over redacted" grep -q "secret removed by corkern" "$KR/memory/webshop/sec.md"
+assert "secret: not in the knowledge repo's files or history" bash -c "! grep -rqF '$AWS' --exclude-dir=.git '$KR' && ! git -C '$KR' log --all -p | grep -qF '$AWS'"
+assert "secret: never reaches the remote" bash -c "! git -C '$W/kr.git' log --all -p | grep -qF '$AWS'"
+assert "secret: the original is in this machine's quarantine" bash -c "grep -rqF '$AWS' /home/$U/.local/state/corkern/quarantine"
+# a commit that bypassed the scan (made by hand, or by an older script) is still waiting to be
+# pushed when the script runs again from the scan step: the push never happens
+asu "$U" bash -c "cd '$KR' && echo 'late $AWS' > memory/webshop/late.md && git add -A && git -c commit.gpgsign=false commit -qm late"
+asu "$U" sed -i '/^step:\(scan\|push\|init-device\|iwe\|verify\)=/d' "/home/$U/.local/state/corkern-migration/3-switch-v1-machine.state"
+run3
+assert "secret: a secret in an unpushed commit stops the script at the scan step" bash -c "[ '$RC' != 0 ] && grep -q 'holds a secret' '$W/output'"
+assert "secret: …and never reaches the remote" bash -c "! git -C '$W/kr.git' log --all -p | grep -qF '$AWS'"
 
 section "summary"
 printf '  %-24s %-7s %-7s\n' scenario wanted got

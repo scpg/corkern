@@ -47,6 +47,8 @@ def migrate(
         typer.echo(f"  {label:<12} : {value}")
     for name in plan.skipped:
         typer.echo(f"      - {name}")
+    for line in plan.report():
+        typer.echo(f"  ! {line}")
     if plan.source.startswith("git-archive"):
         typer.echo(
             "\nNote: a git-archive bundle holds committed v1 data only. Uncommitted v1 changes\n"

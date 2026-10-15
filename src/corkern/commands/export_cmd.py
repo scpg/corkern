@@ -28,6 +28,8 @@ from corkern.commands.reminders import fail
 from corkern.commands.signing_cmd import device_name
 from corkern.config import conf_entries, load_config, repo_format, safe_url, valid_slug
 from corkern.export_format import Export, ExportError, read, sha256, write
+from corkern.migrate import unscannable
+from corkern.secret_scan import redact
 
 COMBINABLE = ("MEMORY.md", ".metrics.tsv")
 # What an import may write into the knowledge repo: corkern's data, nothing else (a crafted
@@ -135,13 +137,24 @@ def _choose(question: str, yes: bool, default: str, with_yes: str) -> str:
 
 
 def _inside(kr: Path, target: Path) -> bool:
-    """target resolves inside the knowledge repo with no symlink on the way."""
+    """target resolves inside the knowledge repo with no symlink on the way, and every folder on
+    the way is a folder (a link cloned with core.symlinks=false is a plain file)."""
     probe = target
     while probe != kr and probe != probe.parent:
-        if probe.is_symlink():
+        if probe.is_symlink() or (probe != target and probe.exists() and not probe.is_dir()):
             return False
         probe = probe.parent
     return str(target.resolve()).startswith(str(kr.resolve()) + os.sep)
+
+
+def _same_but_redacted(target: Path, data: bytes) -> bool:
+    """target is the export's text with its secrets replaced by the marker (as migrate and the
+    hooks leave it), i.e. not a real difference."""
+    try:
+        text, hits = redact(data.decode("utf-8"))
+    except UnicodeDecodeError:
+        return False
+    return bool(hits) and sha256(guard.read_bytes(target)) == sha256(text.encode())
 
 
 def _side(path: Path, tag: str) -> Path:
@@ -170,8 +183,12 @@ def import_(
     typer.echo(f"  {m.get('tool')} export from {exp.host}, {m.get('created')}, {len(m['files'])} files — all checksums match")
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     registry_names = {"projects.conf", "corkern.conf"}
-    identical, missing, different, ignored, config = [], [], [], [], []
+    identical, missing, different, ignored, config, refused, redacted = [], [], [], [], [], [], []
     for rel, data in sorted(exp.files("data").items()):
+        why = guard.unsafe_member(rel)          # .git in any form, "..", absolute: never written
+        if why:
+            refused.append((rel, why))
+            continue
         if rel in registry_names:
             continue
         target = kr / rel
@@ -180,9 +197,15 @@ def import_(
         elif rel in EXECUTABLE_CONFIG and (not target.exists() or sha256(guard.read_bytes(target)) != sha256(data)):
             config.append(rel)
         elif not target.exists():
-            missing.append(rel)
+            if unscannable(data):        # the hooks would hold it back; migrate does not import it
+                refused.append((rel, "could not be checked for secrets (binary or over 2 MB) — not imported"))
+            else:
+                missing.append(rel)
         elif sha256(guard.read_bytes(target)) == sha256(data):
             identical.append(rel)
+        elif _same_but_redacted(target, data):
+            identical.append(rel)
+            redacted.append(rel)
         else:
             different.append(rel)
     have = {s for s, _ in conf_entries(guard.read_text(repo.conf_file))}
@@ -194,7 +217,9 @@ def import_(
                  if rel.startswith(("memory/", "global/", ".devices/")) and rel not in exported]
 
     typer.echo("\ncorkern data")
-    typer.echo(f"  ✓ {len(identical)} identical")
+    typer.echo(f"  ✓ {len(identical)} identical"
+               + (f" ({len(redacted)} with secrets removed here — originals in this machine's quarantine)"
+                  if redacted else ""))
     for label, group in (("missing here", missing), ("different here", different)):
         if group:
             typer.echo(f"  ! {len(group)} {label}:")
@@ -207,10 +232,12 @@ def import_(
                    + ", ".join(line.split(':', 1)[0] for line in new_projects))
     if only_here:
         typer.echo(f"    {len(only_here)} file(s) only here — left alone")
+    for rel, why in refused:
+        typer.echo(f"  ! skipped: {rel} — {why}")
     template = {".gitattributes", ".gitignore", "README.md", ".corkern-format", ".corkern-migration"}
     for rel in ignored:
         if rel not in template:
-            typer.echo(f"  ! {rel}: not corkern data (or behind a symlink) — never imported")
+            typer.echo(f"  ! {rel}: not corkern data (or behind a symlink or a file) — never imported")
     for rel in config:
         typer.echo(f"  ! {rel}: can define commands — imported only after its own yes, never with --yes")
     typer.echo("\nNot imported (machine-specific)")

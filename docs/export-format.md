@@ -98,6 +98,17 @@ An export is treated as untrusted input:
 - Nothing that can run is ever taken from the file: hooks, links and MCP servers are rebuilt from
   the reader's own definitions and its own paths; the file only says which of them existed.
 - No write goes through a symlink or lands outside the target repo.
+- No member path is ever written whose components git itself would refuse (`verify_path`):
+  `.git` in any case, its NTFS forms (`.git.`, `.git `, `git~1`, `.git::$INDEX_ALLOCATION`) and HFS+
+  forms (ignorable code points such as U+200C inside `.git`), `..`, `.`, empty components and
+  absolute paths. Such a member is listed (`skipped: <path> — <why>`) and the rest proceeds; a
+  planted `.git/config` could otherwise run a command (`core.fsmonitor`) and stop the hooks from
+  committing.
+- `corkern migrate` (and `setup --migrate`) commit only after the hooks' secret scan: secrets in
+  the files (an export also holds not yet committed memories) are replaced by a marker, the
+  originals go to this machine's quarantine; a file that cannot be checked (binary or over 2 MB)
+  and mentions a secret word is not imported. If the scan cannot run, nothing is committed — the
+  files stay in place for the first hook commit to scan.
 - Configuration that can define commands (`.iwe/config.toml`) is imported only after a separate,
   explicit yes — never with `--yes`.
 

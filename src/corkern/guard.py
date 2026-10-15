@@ -37,6 +37,7 @@ from __future__ import annotations
 import errno
 import os
 import pwd
+import re
 import subprocess
 import tarfile
 from pathlib import Path, PurePosixPath
@@ -387,6 +388,31 @@ def read_tar(path: Path) -> tuple[dict[str, bytes], list[str]]:
                 raise BundleError(f"bundle exceeds {_MAX_BUNDLE_BYTES // 2**20} MB.")
             files[name.as_posix()] = tar.extractfile(member).read()
     return files, skipped
+
+
+# Path components git's verify_path refuses in a tree entry (core.protectNTFS / protectHFS, on
+# every platform here): ".git" in any case, its NTFS forms (trailing dots or spaces, an alternate
+# data stream ".git::$INDEX_ALLOCATION", the short name "git~1") and its HFS+ forms (code points
+# HFS+ ignores, e.g. U+200C, anywhere in the name). A member with such a component could plant a
+# git directory (core.fsmonitor = a command) inside the knowledge repo.
+_HFS_IGNORABLE = dict.fromkeys([0x200C, 0x200D, 0x200E, 0x200F, *range(0x202A, 0x202F),
+                                *range(0x206A, 0x2070), 0xFEFF])
+_DOTGIT = re.compile(r"(?:\.git|git~1)[. ]*(?::.*)?", re.IGNORECASE)
+
+
+def unsafe_member(rel: str) -> str | None:
+    """Why an archive member path must never be written into a repo, or None. Shared by import
+    and migrate: absolute paths, empty / "." / ".." components and any form of ".git"."""
+    if not rel:
+        return "empty path"
+    if rel.startswith(("/", "\\")):
+        return "absolute path"
+    for part in re.split(r"[/\\]", rel):
+        if part in ("", ".", ".."):
+            return "empty, '.' or '..' path component"
+        if _DOTGIT.fullmatch(part.translate(_HFS_IGNORABLE)):
+            return f"a git directory name ({part!r}) — could plant git configuration"
+    return None
 
 
 def write_tar_private(path: Path, members: list[tuple[str, bytes]]) -> None:

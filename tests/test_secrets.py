@@ -125,6 +125,26 @@ def test_scan_reports_files_and_history(repo):
     assert "rotate" in r.output
 
 
+def test_scan_outgoing_checks_only_what_a_push_would_send(world, monkeypatch, tmp_path):
+    """migrate/3-switch-v1-machine.sh stops before the push when an unpushed commit holds a secret."""
+    a = world["a"]
+    monkeypatch.setenv("CORKERN_MEMORY_DIR", str(a))
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    f = a / "memory" / "p" / "old.md"
+    f.parent.mkdir(parents=True)
+    f.write_text(f"pushed long ago: {GH}\n")
+    git(a, "add", "-A")
+    git(a, "-c", "commit.gpgsign=false", "commit", "-qm", "old")
+    git(a, "push", "-q")
+    r = CliRunner().invoke(app, ["secrets", "--scan", "--outgoing"])
+    assert r.exit_code == 0, r.output                # already on the remote: not outgoing
+    (a / "memory" / "p" / "new.md").write_text("DB_PASSWORD=" + "hunter2Secret99\n")
+    git(a, "add", "-A")
+    git(a, "-c", "commit.gpgsign=false", "commit", "-qm", "new")
+    r = CliRunner().invoke(app, ["secrets", "--scan", "--outgoing"])
+    assert r.exit_code == 1 and "assigned-credential" in r.output and "github-token" not in r.output
+
+
 class TestHooks:
     def test_secret_in_a_memory_never_reaches_the_remote(self, world):
         write_memory(world["a"], "proj/creds.md", f"use {GH} for the API\npassword = Sup3rSecretPw!\n")

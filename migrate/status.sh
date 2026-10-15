@@ -7,7 +7,7 @@
 title "corkern migration status — $(hostname)"
 show_status 1-export-v1          commit-v1 integrate record-commit export verify pack
 show_status 2-setup-new-machine  install confirm-migration shell-profile secret-scan publish keys record-origin trust init-device iwe verify
-show_status 3-switch-v1-machine  final-v1-sync final-export backup retire-v1 install keys carry-over confirm trust push init-device iwe verify
+show_status 3-switch-v1-machine  final-v1-sync final-export backup retire-v1 install keys carry-over confirm trust scan push init-device iwe verify
 show_status rollback-v1-machine  unwire-projects restore-settings move-aside-v2 restore-v1 restore-iwe verify
 title "This machine now"
 if v1_installed; then echo "  corkern v1: installed ($(v1_repo))"; else echo "  corkern v1: not installed"; fi

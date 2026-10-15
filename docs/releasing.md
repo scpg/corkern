@@ -65,7 +65,6 @@ version on TestPyPI first, release an `rc` of it.
 
    After the PyPI upload, the same against pypi.org: `make test-published VERSION=2.0.0rc1`.
 
-   `--extra-index-url` is there for the dependencies (typer, rich), which are not on TestPyPI.
    Then compare the SHA-256 sums in the `build` summary and *Review deployments → pypi →
    Approve and deploy*: the same files go to pypi.org. Users get the pre-release only when they
    ask for it (`pip install corkern==2.0.0rc1` or `--pre`).

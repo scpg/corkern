@@ -33,7 +33,7 @@ import typer
 from corkern import __version__, devices, guard, hooks_install
 from corkern.commands.reminders import fail
 from corkern.commands.signing_cmd import _ask
-from corkern.config import load_config
+from corkern.config import NOT_CONFIRMED, ProjectCheck, check_projects, confirm_projects, load_config
 
 SETTINGS = Path(".claude") / "settings.local.json"
 KEY = "autoMemoryDirectory"
@@ -51,6 +51,22 @@ class Step:
     settings: dict | None = None
     exclude: bool = False    # add .claude/settings.local.json to the project's .git/info/exclude
     home: bool = False       # the project at ~: written as Claude Code's ~/.claude/settings.local.json
+    was: str | None = None   # the autoMemoryDirectory it replaces
+    check: ProjectCheck | None = None
+
+    @property
+    def unconfirmed(self) -> bool:
+        return self.check is not None and not self.check.confirmed
+
+    @property
+    def replaces(self) -> bool:
+        """It would replace an autoMemoryDirectory that points at another folder."""
+        return self.action == "set" and bool(self.was) and self.was != str(self.target)
+
+    @property
+    def needs_yes(self) -> bool:
+        """Asked per project, never approved by --yes."""
+        return self.action != "skip" and (self.unconfirmed or self.replaces)
 
 
 @dataclass
@@ -98,42 +114,50 @@ def _ignored(project: Path) -> bool:
 
 # ── 1. projects ─────────────────────────────────────────────────────────────────────────
 def plan(repo, projects: dict[str, Path]) -> list[Step]:
+    """One step per project. corkern.conf is shared: a path this machine has not confirmed is
+    planned for the registry's (only) path but needs a per-project yes (Step.needs_yes)."""
+    checks = check_projects(repo.path)
     steps = []
     for slug, project in sorted(projects.items()):
-        target = repo.memory_dir / slug
-        if project == Path.home():
-            # a project at ~ (v1's "home"): its local settings file is ~/.claude/settings.local.json,
-            # which Claude Code reads only for sessions started in ~ (tested with real Claude Code)
-            steps.append(_home_step(slug, project, target))
+        check = checks.get(slug)
+        if check and check.confirmed:
+            project = check.path
+        elif check and check.duplicate:
+            steps.append(Step(slug, project, repo.memory_dir / slug, "skip", check=check,
+                              note=f"{len(check.candidates)} different paths in corkern.conf, none {NOT_CONFIRMED}"))
             continue
-        try:
-            guard.assert_safe(project)
-        except guard.V1ProtectedError:
-            steps.append(Step(slug, project, target, "skip", "v1-protected location"))
-            continue
-        if not project.is_dir():
-            steps.append(Step(slug, project, target, "skip",
-                              "not on this machine (set its path in corkern.conf.local)"))
-            continue
-        settings_file = project / SETTINGS
-        current: dict = {}
-        if settings_file.is_file():
-            try:
-                current = json.loads(guard.read_text(settings_file) or "{}")
-            except json.JSONDecodeError:
-                steps.append(Step(slug, project, target, "skip", f"{settings_file} is not valid JSON"))
-                continue
-            if not isinstance(current, dict):
-                steps.append(Step(slug, project, target, "skip", f"{settings_file} is not a JSON object"))
-                continue
-        exclude = (project / ".git").exists() and not _ignored(project)
-        if current.get(KEY) == str(target) and not exclude:
-            steps.append(Step(slug, project, target, "ok"))
-            continue
-        was = current.get(KEY)
-        steps.append(Step(slug, project, target, "set", f"(was: {was})" if was else "",
-                          {**current, KEY: str(target)}, exclude))
+        step = _step(repo, slug, project)
+        step.check = check
+        steps.append(step)
     return steps
+
+
+def _step(repo, slug: str, project: Path) -> Step:
+    target = repo.memory_dir / slug
+    if project == Path.home():
+        # a project at ~ (v1's "home"): its local settings file is ~/.claude/settings.local.json,
+        # which Claude Code reads only for sessions started in ~ (tested with real Claude Code)
+        return _home_step(slug, project, target)
+    try:
+        guard.assert_safe(project)
+    except guard.V1ProtectedError:
+        return Step(slug, project, target, "skip", "v1-protected location")
+    if not project.is_dir():
+        return Step(slug, project, target, "skip", "not on this machine (set its path in corkern.conf.local)")
+    settings_file = project / SETTINGS
+    current: dict = {}
+    if settings_file.is_file():
+        try:
+            current = json.loads(guard.read_text(settings_file) or "{}")
+        except json.JSONDecodeError:
+            return Step(slug, project, target, "skip", f"{settings_file} is not valid JSON")
+        if not isinstance(current, dict):
+            return Step(slug, project, target, "skip", f"{settings_file} is not a JSON object")
+    exclude = (project / ".git").exists() and not _ignored(project)
+    if current.get(KEY) == str(target) and not exclude:
+        return Step(slug, project, target, "ok")
+    was = current.get(KEY)
+    return Step(slug, project, target, "set", "", {**current, KEY: str(target)}, exclude, was=was)
 
 
 def _home_step(slug: str, project: Path, target: Path) -> Step:
@@ -152,9 +176,8 @@ def _home_step(slug: str, project: Path, target: Path) -> Step:
     if current.get(KEY) == str(target):
         return Step(slug, project, target, "ok")
     was = current.get(KEY)
-    return Step(slug, project, target, "set",
-                ("(was: " + was + ") " if was else "") + "in ~/.claude/settings.local.json — this machine only, "
-                "keep it out of shared dotfiles", {**current, KEY: str(target)}, home=True)
+    return Step(slug, project, target, "set", "in ~/.claude/settings.local.json — this machine only, "
+                "keep it out of shared dotfiles", {**current, KEY: str(target)}, home=True, was=was)
 
 
 def _apply(step: Step) -> None:
@@ -274,15 +297,27 @@ def init_device(
     if not steps:
         typer.echo("  (no projects yet — add one with: corkern add <slug> [path])")
     for s in steps:
+        if s.check and s.check.duplicate and s.check.confirmed:
+            typer.echo(f"  ! {s.slug}: {len(s.check.candidates)} different paths in corkern.conf "
+                       f"({', '.join(s.check.lines)}) — using {s.project}, confirmed on this machine")
+        if s.unconfirmed:
+            typer.echo("  ? " + "\n    ".join(s.check.explain().split("\n")))
         if s.action == "ok":
             typer.echo(f"  ✓ {s.slug:<18} already set")
         elif s.action == "skip":
             typer.echo(f"  - {s.slug:<18} skipped: {s.note}")
         else:
-            typer.echo(f"  → {s.slug:<18} {s.project / SETTINGS}: {KEY} = {s.target} {s.note}".rstrip())
+            where = "~/.claude/settings.local.json" if s.home else s.project / SETTINGS
+            value = f"{s.was} → {s.target}" if s.replaces else f"= {s.target}"
+            typer.echo(f"  → {s.slug:<18} {where}: {KEY} {value} {'' if s.home else s.note}".rstrip())
+            if s.home:
+                typer.echo(f"    {'':<18} ({s.note})")
             if s.exclude:
                 typer.echo(f"    {'':<18} + {SETTINGS} added to {s.project}/.git/info/exclude "
                            "(machine-specific, never committed)")
+        if s.needs_yes:
+            why = "not confirmed on this machine" if s.unconfirmed else "replaces another folder"
+            typer.echo(f"    {'':<18} ({why}: asked for this project alone, never approved by --yes)")
     hooks_state = hooks_install.state()
     hooks_line = {"current": f"✓ hooks {hooks_install.home() / 'hooks'} (corkern {__version__})",
                   "missing": f"→ hooks: install corkern {__version__}'s hooks to {hooks_install.home() / 'hooks'}",
@@ -299,19 +334,43 @@ def init_device(
     typer.echo("\n  Memories Claude Code already keeps in ~/.claude/projects/ are not moved "
                "(v1 memories come in with corkern migrate).")
 
-    todo = [s for s in steps if s.action == "set"]
+    asked = [s for s in steps if s.needs_yes]
+    todo = [s for s in steps if s.action == "set" and not s.needs_yes]
     todo_claude = [c for c in claude if c.action == "set"]
     hooks_todo = hooks_state in ("missing", "outdated")
-    if not todo and not todo_claude and not hooks_todo:
+    if not todo and not todo_claude and not hooks_todo and not asked:
         typer.echo("\n  ✓ Nothing to change.")
         return
     if not apply:
-        typer.echo(f"\n  Nothing changed. To apply the {len(todo) + len(todo_claude) + hooks_todo} change(s): "
-                   "corkern init-device --apply")
+        typer.echo(f"\n  Nothing changed. To apply the {len(todo) + len(asked) + len(todo_claude) + hooks_todo} "
+                   "change(s): corkern init-device --apply")
         return
     if _v1_installed():
         fail("corkern v1 is installed on this machine: pointing Claude's memory and hooks at v2 would\n"
              "  take them away from v1. Apply this only when switching to v2 (after UAT).")
+    confirmed: dict[str, Path] = {}
+    for s in asked:
+        if yes:
+            how = f"corkern add {s.slug} {s.project} on this machine to confirm" if s.unconfirmed \
+                else "run corkern init-device --apply without --yes to be asked"
+            typer.echo(f"  - {s.slug}: left as it is ({how})")
+            continue
+        what = []
+        if s.unconfirmed:
+            what.append(f"confirm {s.check.lines[0]} → {s.project} on this machine")
+        if s.action == "set":
+            what.append(f"set its {KEY} ({s.was} → {s.target})" if s.replaces else f"set its {KEY}")
+        if _ask(f"\n  {s.slug}: {' and '.join(what)}? [y/N] ", False):
+            if s.unconfirmed:
+                confirmed[s.slug] = s.project
+            if s.action == "set":
+                todo.append(s)
+    if confirmed:
+        confirm_projects(repo.path, confirmed)
+        typer.echo(f"  ✓ confirmed on this machine: {' '.join(sorted(confirmed))}")
+    if not todo and not todo_claude and not hooks_todo:
+        typer.echo("  Nothing else to change.")
+        return
     if not _ask(f"\n  Apply {len(todo) + len(todo_claude) + hooks_todo} change(s)? [y/N] ", yes):
         typer.echo("  Nothing changed.")
         return

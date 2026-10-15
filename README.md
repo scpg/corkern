@@ -113,6 +113,14 @@ concurrently, real Claude Code sessions) are listed in [CLAUDE.md](CLAUDE.md).
   extra lines came from another device.
 - **Uses Claude Code's own setting** (`autoMemoryDirectory`, via `corkern init-device`) to point
   each project's memory at the knowledge repository.
+- **Reads or wires a project folder only once this machine confirmed its path.** The registry
+  (`corkern.conf`) is shared, so a teammate can point a project name at any folder. `harvest`,
+  `prune`, `graphify`, `crg` and `init-device` use a path only when this machine confirmed it.
+  `corkern add` confirms a path, and so do this machine's own `corkern.conf.local`, a per-project
+  "y" in `init-device`, and `migrate` for the projects of its own export. A path that changes
+  later on another machine is no longer confirmed. `status`, `list` and the session context flag
+  such projects; `corkern add <slug> <path>` or `corkern add --confirm-all` (one question, after
+  listing every path) confirms them.
 
 ## With or without a dotfile manager
 
@@ -132,7 +140,9 @@ What it writes there is the same on every machine: paths are written as `$HOME/â
 hooks do nothing on a machine without corkern, and the location of this machine's knowledge
 repository is not in these files: `corkern setup` records it in this machine's
 `~/.config/corkern/machine.conf`. So a shared `settings.json` also works on machines without corkern, or
-with another username. A second `corkern init-device` changes nothing. A file that is a symlink
+with another username. A second `corkern init-device` changes nothing. An `autoMemoryDirectory`
+that points at another folder is replaced only after a "y" for that project; `--yes` does not
+approve that, nor a project whose path this machine has not confirmed. A file that is a symlink
 (for example from stow) is not written through; `init-device` says so and leaves it to you.
 
 ## Moving from v1

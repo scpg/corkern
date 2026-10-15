@@ -107,6 +107,17 @@ assert "markers: nothing reached the remote" bash -c "[ -z \"\$(git -C '$W/kr.gi
 world secret;       reexport "printf 'aws_secret_access_key = wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY\n' > data/memory/webshop/creds.md \
                     && python3 /src/docker/migration/remanifest.py"; snap; run2; verdict ok "a secret in the v1 data is redacted before the migration commit" "secret"
 assert "secret: never reaches the remote (the original stays in the quarantine)" bash -c "! git -C '$W/kr.git' log --all -p | grep -qF wJalrXUtnFEMI && grep -rqF wJalrXUtnFEMI /home/$U/.local/state/corkern/quarantine"
+world scan-fails;   reexport "printf 'aws_secret_access_key = wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY\n' > data/memory/webshop/creds.md \
+                    && python3 /src/docker/migration/remanifest.py"
+                    asu "$U" bash -c 'mkdir -p ~/.local/state/corkern && touch ~/.local/state/corkern/quarantine'   # quarantine unusable
+                    snap; run2; verdict refuse "the secret scan cannot run (quarantine not writable)" "nothing was committed"
+assert "scan-fails: nothing committed, nothing on the remote, the files are in place" bash -c \
+       "! git -C '$KR' rev-parse -q --verify HEAD >/dev/null && [ -z \"\$(git -C '$W/kr.git' for-each-ref)\" ] && grep -qF wJalrXUtnFEMI '$KR/memory/webshop/creds.md'"
+                    asu "$U" rm -f "/home/$U/.local/state/corkern/quarantine"; run2; verdict ok "…rerun finishes the same migration" "unfinished migration"
+assert "scan-fails: the secret never reaches the remote" bash -c "! git -C '$W/kr.git' log --all -p | grep -qF wJalrXUtnFEMI"
+assert "scan-fails: the export's projects are confirmed on this machine" bash -c \
+       "f='$KR/.git/corkern/projects-confirmed'; grep -qxF \"\$(printf 'corkern\t/home/$U/dev/corkern')\" \"\$f\" \
+        && grep -qxF \"\$(printf 'webshop\t/home/$U/dev/projects/webshop')\" \"\$f\""
 world remote-used;  git clone -q "$W/kr.git" "$W/x" 2>/dev/null; (cd "$W/x" && echo other > f && git add f && git -c user.name=x -c user.email=x@x commit -qm other && git push -q origin HEAD:main)
                     chown -R "$U:$U" "$W"; snap; run2; verdict refuse "the remote already has content" "empty"
 world unreachable;  REMOTE=/nonexistent/kr.git; snap; run2; verdict refuse "remote not reachable" "reachable"

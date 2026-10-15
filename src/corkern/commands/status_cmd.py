@@ -15,7 +15,7 @@ from corkern import __version__, guard
 from corkern.commands.init_device_cmd import HOOK_EVENTS
 from corkern.commands.secrets_cmd import log_entries
 from corkern.commands.trust_cmd import UNTRUSTED, held_entries, trust_file
-from corkern.config import load_config, repo_state_dir, safe_url, state_dir
+from corkern.config import NOT_CONFIRMED, check_projects, load_config, repo_state_dir, safe_url, state_dir
 from corkern.memory_index import usage
 
 
@@ -389,9 +389,21 @@ def status(
     if verbose:
         _verbose(r, repo, projects)
     r.header("Projects")
+    checks = check_projects(repo.path)
+    for c in checks.values():
+        if c.duplicate:
+            r.warn(f"{c.slug}: {len(c.candidates)} different paths in corkern.conf ({', '.join(c.lines)}) — "
+                   + (f"using {c.path}, confirmed on this machine" if c.confirmed else f"none {NOT_CONFIRMED}"))
+    open_ = [c for c in checks.values() if not c.confirmed]
+    if open_:
+        r.warn(f"{len(open_)} project(s) {NOT_CONFIRMED} — corkern add <slug> <path>, or corkern init-device "
+               "to confirm (until then corkern does not read their conversations or wire their folders)")
     for slug, path in sorted(projects.items()):
+        c = checks.get(slug)
+        path = c.path if c and c.confirmed else path
         marker = "✓" if path.exists() else "✗"
-        typer.echo(f"  {marker}  {slug:<20} {path}")
+        flag = f"  ({NOT_CONFIRMED})" if c and not c.confirmed else ""
+        typer.echo(f"  {marker}  {slug:<20} {path}{flag}")
     typer.echo("\n" + "─" * 32)
     if not r.problems and not r.warnings:
         typer.echo("  All good." + ("" if verbose else "  Full diagnostics: corkern status -v"))

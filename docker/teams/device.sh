@@ -11,7 +11,9 @@
 #           kind (tokens, passwords, .env, private keys, key files, binary, reminders, …)
 #   sync    final push/pull until converged
 #   (alpha) the intruder clones team alpha early and pushes a file named HEAD..@{upstream}
-#           while nobody verifies yet — the first step of the H5 bypass
+#           while nobody verifies yet — the first step of the H5 bypass — and registers a slug
+#           pointing at ~/private-client, a folder every alpha device has but never registered
+#           (M8/L1): harvest / prune / init-device on the victims must leave that folder alone
 #   attack  the intruder signs with its own key, lists it in
 #           allowed_signers, pushes poison (signed + unsigned), then attacks the hooks with
 #           plain git: symlinks at corkern's state paths and in memory/ pointing at the
@@ -54,7 +56,8 @@ if [ "$ROLE" = intruder ]; then
     # step 1, before the team turns verification on: a harmless-looking file named like the
     # revision range the hooks verify — every alpha device integrates it (audit H5)
     echo "meeting notes" > "$KR/HEAD..@{upstream}"
-    git -C "$KR" add -f -- 'HEAD..@{upstream}' && git -C "$KR" -c commit.gpgsign=false commit -qm "docs: notes"
+    echo "team-notes:private-client" >> "$KR/corkern.conf"     # the victims' private folder (M8, L1)
+    git -C "$KR" add -f -- 'HEAD..@{upstream}' corkern.conf && git -C "$KR" -c commit.gpgsign=false commit -qm "docs: notes"
     git -C "$KR" push -q 2>>"$LOG" || { git -C "$KR" pull -q --rebase --no-gpg-sign; git -C "$KR" push -q; }
     touch "$FLAGS/planted"
     wait_for "$FLAGS/attack-go"
@@ -151,7 +154,18 @@ git init -q "$HOME/code/$DEV-scratch"                                       # pe
 corkern add "$REPO-shared" "$HOME/dev/$REPO-shared" >> "$LOG" 2>&1 || true
 corkern add "$DEV-scratch" "$HOME/code/$DEV-scratch" >> "$LOG" 2>&1
 for _ in 1 2; do fire corkern-push; fire corkern-pull; done                 # share the registry
+if [ "$REPO" = alpha ]; then                 # a private project with a Claude Code conversation
+    mkdir -p "$HOME/private-client/.claude"
+    pkey=$(printf '%s' "$HOME/private-client" | sed 's/[^A-Za-z0-9]/-/g')
+    mkdir -p "$HOME/.claude/projects/$pkey"
+    echo "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"PRIVATE-CLIENT-TALK-$DEV\"}}" \
+        > "$HOME/.claude/projects/$pkey/client-call.jsonl"
+fi
 corkern init-device --apply --yes > "$OUT/$DEV-init-device.txt" 2>&1
+if [ "$REPO" = alpha ]; then                 # the slug the intruder registered
+    corkern harvest team-notes > "$OUT/$DEV-harvest-private.txt" 2>&1; echo "exit $?" >> "$OUT/$DEV-harvest-private.txt"
+    corkern prune team-notes > "$OUT/$DEV-prune-private.txt" 2>&1; echo "exit $?" >> "$OUT/$DEV-prune-private.txt"
+fi
 mkdir -p "$M/$DEV" "$M/$REPO-shared" "$M/global" "$KR/global"
 
 # ── work: concurrent writes with planted secrets ────────────────────────────────────────
@@ -261,6 +275,8 @@ find "$HOME/.local/state/corkern/quarantine" -type f -exec cat {} + > "$OUT/$DEV
     echo "symlinks-setting $(git -C "$KR" config --local --get core.symlinks)"
     git -C "$KR" log --all -p --format= > "$OUT/$DEV-local-history.txt"
     jq -r .autoMemoryDirectory "$HOME/code/$DEV-scratch/.claude/settings.local.json" 2>/dev/null | sed 's/^/automem /'
+    [ -e "$HOME/private-client/.claude/settings.local.json" ] && echo "private-client WIRED"
+    grep -rqs PRIVATE-CLIENT-TALK "$M" && echo "private-client TALK IN MEMORY"
 } > "$OUT/$DEV-result.txt"
 cp "$KR/.git/corkern/held" "$OUT/$DEV-held.txt" 2>/dev/null
 for proj in $PROJECTS "$DEV-scratch"; do

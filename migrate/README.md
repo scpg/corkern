@@ -29,7 +29,9 @@ back as it was and the script says what to do. Script 1 also refuses to resume w
 changed since its export was started, so an old export is never handed on silently. Every
 case is tested in `make test-scenarios`. Script 2 refuses, before installing anything, an export
 that is damaged, incomplete, from a newer corkern or holds conflict markers, a remote that
-already has commits, and a machine where git does not know your name/email yet.
+already has commits, and a machine where git does not know your name/email yet. If the secret scan
+cannot run while the knowledge repo is built, nothing is committed and the script stops; the
+files stay in place, and the next run finishes that same migration.
 
 Script 3 does not trust the knowledge repo it clones. Before v1 is touched it checks the export
 point named in `.corkern-migration`: it must be a commit id that this v1 has (otherwise: fetch v1
@@ -39,6 +41,11 @@ or outside the repo (such files are skipped and listed in the report; v1's versi
 retired repo), keeps a last line without a newline, says "combined" only when every line arrived,
 and commits only after the hooks' secret scan. A separate scan step checks everything that will be
 pushed and stops before the push if a commit holds a secret.
+
+The projects of this machine's own v1 are confirmed on it (scripts 2 and 3). corkern.conf is
+shared, and corkern reads a project's conversations or wires its folder only through a path this
+machine confirmed. Script 3 confirms only the projects whose path in the knowledge repo is the
+same as in this v1; the others are listed in the report (`corkern add --confirm-all`).
 
 To redo a script from the start: `--restart` (the previous progress is kept as `*.state.*.old`).
 Any time: `bash migrate/status.sh` (where this machine stands), `--status` on a script (its

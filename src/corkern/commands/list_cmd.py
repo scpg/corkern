@@ -18,7 +18,7 @@ import typer
 
 from corkern import devices, guard
 from corkern.commands.signing_cmd import device_name
-from corkern.config import load_config
+from corkern.config import NOT_CONFIRMED, check_projects, load_config
 
 COLUMNS = ("SLUG", "DEVICE", "PATH", "STATUS", "LAST-SEEN")
 FIELD = {"SLUG": 0, "DEVICE": 1, "PATH": 3, "STATUS": 4, "LAST-SEEN": 5}
@@ -63,12 +63,15 @@ def _rows(repo, projects) -> list[tuple[str, ...]]:
     me = device_name()
     manifests = devices.read_all(repo)
     names = list(manifests) + ([me] if me not in manifests else [])
+    checks = check_projects(repo.path)
     rows = []
     for slug in devices.ordered_slugs(repo, projects):
         for device in names:
             if device == me:
                 last = manifests.get(me, {}).get(slug, ("", ""))[0]
-                status = local_status(projects[slug], repo.memory_dir / slug)
+                c = checks.get(slug)
+                status = ("unconfirmed" if c and not c.confirmed
+                          else local_status(projects[slug], repo.memory_dir / slug))
                 rows.append((slug, f"{device} (local)", "1", str(projects[slug]), status, last))
             elif slug in manifests[device] and manifests[device][slug][1]:
                 last, path = manifests[device][slug]
@@ -99,4 +102,7 @@ def list_projects(
         typer.echo("  " + "".join(values[c] for c in show))
     if not rows:
         typer.echo("  No projects tracked yet — add one with: corkern add <slug> [path]")
+    for c in check_projects(repo.path).values():
+        if not c.confirmed:
+            typer.echo(f"  ! {c.slug}: {NOT_CONFIRMED} — corkern add {c.slug} <path> (or corkern add --confirm-all)")
     typer.echo("")

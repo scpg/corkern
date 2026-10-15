@@ -42,7 +42,10 @@ def migrate(
         ("global file", "yes" if "global/CLAUDE.md" in plan.files else "no"),
         ("skipped", len(plan.skipped)),
     ]
-    typer.echo("DRY RUN — nothing written" if dry_run else "Migrated v1 export bundle")
+    failed = bool(plan.unscanned) and not dry_run
+    typer.echo("DRY RUN — nothing written" if dry_run else
+               "NOT migrated — nothing was committed (the secret scan could not run)" if failed else
+               "Migrated v1 export bundle")
     for label, value in rows:
         typer.echo(f"  {label:<12} : {value}")
     for name in plan.skipped:
@@ -56,6 +59,10 @@ def migrate(
         )
     elif plan.uncommitted:
         typer.echo(f"\n  Includes {plan.uncommitted} change(s) that were not committed in the source.")
+    if failed:
+        typer.echo(f"\nNothing was committed in {target}: the files are in place, uncommitted. Fix the cause "
+                   "above and run the same command again — it finishes this migration.", err=True)
+        raise typer.Exit(1)
     typer.echo("  Check it is complete any time:  corkern import <export> --check")
     if not dry_run:
         typer.echo(f"\nNext: export CORKERN_MEMORY_DIR={target}")

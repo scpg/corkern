@@ -9,16 +9,21 @@ and migrate builds a new knowledge repo from that tarball alone.
 Nothing in the bundle is trusted: a member with a ".git" component (or one of its NTFS/HFS
 forms) is never written, and the migration commit is made only after the hooks' secret scan
 and redaction (originals to the local quarantine). An export holds working-tree files, i.e.
-text no hook has scanned yet.
+text no hook has scanned yet. When the scan cannot run, nothing is committed (the command exits
+1); the files stay in place and the same command, run again, finishes that migration.
+
+The projects of the export are confirmed on this machine (.git/corkern/projects-confirmed):
+the export is this user's own registry, not a teammate's later change to the shared one.
 """
 from __future__ import annotations
 
+import hashlib
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from corkern import guard
-from corkern.config import CONF_FILE
+from corkern.config import CONF_FILE, _parse_conf, confirm_projects, repo_state_dir
 from corkern.knowledge_repo import TEMPLATE, InitError, require_dir_or_absent
 from corkern.secret_scan import HINT
 
@@ -143,10 +148,31 @@ def _redact(target: Path, plan: Plan) -> bool:
     return True
 
 
+PENDING = "migrate-pending"           # in .git/corkern: sha256 of the bundle, until the commit
+
+
+def _digest(bundle: Path) -> str:
+    return hashlib.sha256(guard.read_bytes(bundle)).hexdigest()
+
+
+def unfinished(target: Path, bundle: Path) -> bool:
+    """`target` holds this bundle's migration that stopped before its commit (scan failed)."""
+    marker = repo_state_dir(target) / PENDING
+    if not marker.is_file() or marker.is_symlink() or (target / ".git").is_symlink():
+        return False
+    try:
+        guard.run_git(target, "rev-parse", "--verify", "-q", "HEAD")
+        return False                                   # committed: not unfinished
+    except guard.GitError:
+        pass
+    return (guard.read_shared(marker) or "").strip() == _digest(bundle)
+
+
 def migrate(bundle: Path, dest: Path, dry_run: bool = False) -> Plan:
     target = guard.assert_safe(dest)
     require_dir_or_absent(target)
-    if not guard.is_empty(target):
+    resume = not guard.is_empty(target)
+    if resume and not unfinished(target, bundle):
         raise InitError(f"{target} is not empty — migrate needs a new, empty destination.")
     plan = plan_from_bundle(bundle)
     # any text file (memories, registry, metrics) — a half-merged file must never become v2's start
@@ -161,14 +187,25 @@ def migrate(bundle: Path, dest: Path, dry_run: bool = False) -> Plan:
     if dry_run:
         return plan
 
+    guard.set_knowledge_repo(target)              # nothing below it is written through a symlink
+    if resume:
+        extra = sorted(set(guard.run_git(target, "ls-files", "-o", "--exclude-standard", "-z").stdout.split("\0"))
+                       - {""} - set(plan.files) - set(TEMPLATE))
+        if extra:
+            raise InitError(f"{target} holds files this migration did not write ({', '.join(extra[:5])}) — "
+                            "move them away and run the same command again")
     for rel, content in TEMPLATE.items():
         if rel not in plan.files:
             guard.write_text(target / rel, content)
     for rel, data in plan.files.items():
-        guard.write_bytes(target / rel, data)
+        guard.write_bytes(target / rel, data)      # on a resume: the export's text again, then scanned
     guard.run_git(target, "init", "-q", "-b", "main")
+    guard.write_text(repo_state_dir(target) / PENDING, _digest(bundle) + "\n")
+    # the registry of this user's own export: confirmed on this machine (harvest, init-device)
+    confirm_projects(target, _parse_conf(plan.files.get(CONF_FILE, b"").decode(errors="replace"), CONF_FILE))
     if not _redact(target, plan):
         return plan                 # fail closed: nothing committed unscanned
     guard.run_git(target, "add", "-A")
     guard.run_git(target, "commit", "-q", "-m", MIGRATE_COMMIT_MSG)
+    guard.remove_file(repo_state_dir(target) / PENDING)
     return plan

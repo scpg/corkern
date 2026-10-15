@@ -13,6 +13,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.conftest import confirm
+
 ROOT = Path(__file__).resolve().parents[1]
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
 
@@ -58,6 +60,9 @@ def pair(tmp_path):
         subprocess.run(["git", "-C", str(root), "commit", "-qm", "seed alpha"], check=True)
     (v1 / "corkern").write_text(V1)
     (v1 / "corkern").chmod(0o755)
+    # v2 uses a shared registry's paths only once this machine confirmed them (v1 has no such
+    # step): here, the user registered these projects on this machine
+    confirm(v2, {"alpha": home / "dev/alpha", "beta": home / "dev/beta", "home": home})
     return {"home": home, "v1": v1, "v2": v2}
 
 

@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 
 from corkern import guard
+from corkern.commands.secrets_cmd import redact_files as REDACT_FILES
 from corkern.secret_scan import MARKER
 from tests.test_export_import import craft, export_to, git, kr, run  # noqa: F401  (fixture)
 from tests.test_hooks import hook
@@ -140,11 +141,68 @@ def test_m6_scan_failure_fails_closed(kr, tmp_path, monkeypatch):
         raise OSError("quarantine not writable")
     monkeypatch.setattr("corkern.commands.secrets_cmd.redact_files", broken)
     r = run("migrate", str(src), str(dest))
-    assert r.exit_code == 0, r.output
-    assert subprocess.run(["git", "-C", str(dest), "rev-parse", "--verify", "-q", "HEAD"],
-                          capture_output=True).returncode != 0, "something was committed unscanned"
+    assert r.exit_code == 1, r.output
+    assert not has_head(dest), "something was committed unscanned"
     assert (dest / "memory" / "web" / "pending.md").is_file()
     assert "not committed: the secret scan could not run" in r.output
+    assert "Migrated" not in r.output and "nothing was committed" in r.output
+    assert "Next: export" not in r.output
+    # a rerun (scan working again) finishes the same migration
+    monkeypatch.setattr("corkern.commands.secrets_cmd.redact_files", REDACT_FILES)
+    r = run("migrate", str(src), str(dest))
+    assert r.exit_code == 0, r.output
+    assert has_head(dest) and git(dest, "status", "--porcelain") == ""
+    committed = git(dest, "show", "HEAD:memory/web/pending.md")
+    assert AWS not in committed and MARKER.format(kind="aws-access-key") in committed
+
+
+def has_head(repo) -> bool:
+    return subprocess.run(["git", "-C", str(repo), "rev-parse", "--verify", "-q", "HEAD"],
+                          capture_output=True).returncode == 0
+
+
+def test_setup_migrate_exits_1_when_the_scan_could_not_run(kr, tmp_path, monkeypatch):
+    (kr / "memory" / "web" / "pending.md").write_text(f"deploy with {AWS} today\n")
+    src, dest = tmp_path / "x.tar.gz", tmp_path / "home" / "new-kr"
+    export_to(src)
+    monkeypatch.delenv("CORKERN_MEMORY_DIR")
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setenv("CORKERN_CODE_DIR", str(tmp_path / "home" / ".local/share/corkern"))
+
+    def broken(*a, **k):
+        raise OSError("quarantine not writable")
+    monkeypatch.setattr("corkern.commands.secrets_cmd.redact_files", broken)
+    r = run("setup", "--migrate", str(src), "--memory-dir", str(dest))
+    assert r.exit_code == 1, r.output
+    assert not has_head(dest) and (dest / "memory" / "web" / "pending.md").is_file()
+    assert "not committed: the secret scan could not run" in r.output
+    assert "nothing was committed" in r.output
+    assert not (tmp_path / "xdg" / "corkern" / "machine.conf").exists()      # not set up half-way
+    monkeypatch.setattr("corkern.commands.secrets_cmd.redact_files", REDACT_FILES)   # the scan works again
+    r = run("setup", "--migrate", str(src), "--memory-dir", str(dest))      # the rerun resumes
+    assert r.exit_code == 0, r.output
+    assert has_head(dest) and (tmp_path / "xdg" / "corkern" / "machine.conf").is_file()
+
+
+def test_migrate_refuses_a_non_empty_folder_that_is_not_its_own_unfinished_run(kr, tmp_path):
+    src, dest = tmp_path / "x.tar.gz", tmp_path / "new"
+    export_to(src)
+    dest.mkdir()
+    (dest / "notes.md").write_text("mine\n")
+    r = run("migrate", str(src), str(dest))
+    assert r.exit_code == 1 and "not empty" in r.output
+    assert (dest / "notes.md").read_text() == "mine\n"
+
+
+def test_migrate_confirms_the_projects_of_its_export(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "st"))
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    bundle = tar_bundle(tmp_path / "v1.tar", {"projects.conf": b"web:dev/web\nweb:dev/other\nabs:/srv/abs\n",
+                                              "memory/web/a.md": b"fact a\n"})
+    dest = tmp_path / "new"
+    assert run("migrate", str(bundle), str(dest)).exit_code == 0
+    assert (dest / ".git" / "corkern" / "projects-confirmed").read_text() == \
+        f"abs\t/srv/abs\nweb\t{tmp_path / 'home' / 'dev' / 'web'}\n"
 
 
 def test_import_skips_a_path_whose_folder_is_a_file_here(kr, tmp_path):

@@ -91,3 +91,11 @@ def listed_here(output: str, slug: str) -> bool:
     """`slug` is listed for this device and its path exists here."""
     row = list_row(output, slug)
     return row is not None and "no path" not in row
+
+
+def confirm(kr: Path, items: dict) -> None:
+    """What `corkern add` records on this machine (.git/corkern/projects-confirmed), for fixtures
+    that write corkern.conf directly."""
+    store = kr / ".git" / "corkern" / "projects-confirmed"
+    store.parent.mkdir(parents=True, exist_ok=True)
+    store.write_text("".join(f"{s}\t{p}\n" for s, p in sorted(items.items())))

@@ -33,7 +33,7 @@ import typer
 from corkern import claude_print, guard
 from corkern.commands.reminders import fail, slug_for_cwd
 from corkern.commands.signing_cmd import device_name
-from corkern.config import load_config, state_dir
+from corkern.config import check_projects, load_config, state_dir
 
 MAX_MSG = 2000
 MAX_TOTAL = 300_000
@@ -175,14 +175,24 @@ def _classify(files: list[Path], manifest: dict[str, list[str]]) -> tuple[list[P
 
 
 # ── shared ──────────────────────────────────────────────────────────────────────────────
-def _resolve(slug: str | None, usage: str) -> tuple[object, str, Path]:
+def _resolve(slug: str | None, usage: str, private: bool = False) -> tuple[object, str, Path]:
+    """`private`: the command reads the project's conversations — only from a path this machine
+    confirmed (corkern.conf is shared: a teammate could point the slug at another folder)."""
     repo, projects = load_config()
     slug = slug or slug_for_cwd(projects)
     if not slug:
         fail(f"Could not detect project slug.\n  Usage: {usage}\n  Known slugs: {' '.join(sorted(projects))}")
     if slug not in projects:
         fail(f"Slug '{slug}' not found in corkern.conf")
-    return repo, slug, projects[slug]
+    if not private:
+        return repo, slug, projects[slug]
+    check = check_projects(repo.path)[slug]
+    if not check.confirmed:
+        fail(f"Refusing to read the conversations of {check.explain()}")
+    if check.duplicate:
+        typer.echo(f"  ! {slug}: {len(check.candidates)} different paths in corkern.conf ({', '.join(check.lines)})"
+                   f" — using {check.path}, confirmed on this machine")
+    return repo, slug, check.path
 
 
 def _size(n: int) -> str:
@@ -229,9 +239,9 @@ def harvest(
     model: str = typer.Option(None, "--model", help="Claude model"),
 ) -> None:
     """Extract memories from the project's past Claude Code conversations."""
-    repo, slug, project = _resolve(slug, "corkern harvest [slug] [--all] [--interactive]")
+    repo, slug, project = _resolve(slug, "corkern harvest [slug] [--all] [--interactive]", private=True)
     mem_dir = repo.memory_dir / slug
-    typer.echo(f"\ncorkern harvest: {slug}")
+    typer.echo(f"\ncorkern harvest: {slug}\n  Project: {project}")
     files = guard.list_transcripts(project)
     if not files:
         source = guard.transcript_dir(project)
@@ -363,9 +373,9 @@ def prune(
     slug: str = typer.Argument(None, help="Project (default: the one for the current directory)"),
 ) -> None:
     """Conversation inventory for a project: harvested / changed / pending, and how to clean up."""
-    repo, slug, project = _resolve(slug, "corkern prune <slug>")
+    repo, slug, project = _resolve(slug, "corkern prune <slug>", private=True)
     source = guard.transcript_dir(project)
-    typer.echo(f"\ncorkern prune: {slug}\n  Source: {source}\n")
+    typer.echo(f"\ncorkern prune: {slug}\n  Project: {project}\n  Source: {source}\n")
     files = guard.list_transcripts(project)
     if not files:
         typer.echo("  ✓ No conversation files — nothing to prune.\n")

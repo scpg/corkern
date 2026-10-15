@@ -20,7 +20,7 @@ from corkern import guard, hooks_install
 from corkern.commands.reminders import fail
 from corkern.config import CONF_FILE, machine_conf_path, machine_memory_dir, safe_url, write_machine_conf
 from corkern.knowledge_repo import InitError, harden, init_repo
-from corkern.migrate import migrate as run_migrate
+from corkern.migrate import migrate as run_migrate, unfinished
 
 
 
@@ -47,7 +47,7 @@ def setup(
         if not (kr / CONF_FILE).is_file():
             fail(f"no knowledge repo at {kr} — use --clone URL, --new, --create-github or --migrate")
         typer.echo(f"Using existing knowledge repo {kr}")
-    elif kr.exists() and not guard.is_empty(kr):
+    elif kr.exists() and not guard.is_empty(kr) and not (mode == "migrate" and unfinished(kr, migrate)):
         fail(f"{kr} exists and is not empty — choose another --memory-dir")
 
     try:
@@ -69,6 +69,11 @@ def setup(
                     fail("gh repo create failed — the knowledge repo is ready locally; publish it yourself")
         elif mode == "migrate":
             plan = run_migrate(migrate, kr)
+            if plan.unscanned:
+                for line in plan.report():
+                    typer.echo(f"  ! {line}")
+                fail(f"nothing was committed in {kr} and this machine is not set up yet. Fix the cause above "
+                     "and run the same command again — it finishes this migration.")
             typer.echo(f"Migrated {len(plan.files)} file(s) from {migrate} → {kr}")
             for line in plan.report():
                 typer.echo(f"  ! {line}")

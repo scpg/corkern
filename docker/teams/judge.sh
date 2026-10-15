@@ -121,6 +121,23 @@ for d in $alpha; do
     fi
 done
 
+section "a slug the intruder pointed at a private folder (M8, L1)"
+assert "the intruder registered team-notes:private-client in alpha's corkern.conf" \
+    bash -c "git -C $SHARED/alpha.git show main:corkern.conf | grep -qx 'team-notes:private-client'"
+for d in $alpha; do
+    r="$RES/$d-result.txt"
+    if ! grep -qE '^private-client' "$r" && ! in_out "$d-harvest-private.txt" "client-call.jsonl" \
+        && ! in_out "$d-prune-private.txt" "client-call.jsonl" && in_out "$d-harvest-private.txt" "not confirmed on this machine" \
+        && in_out "$d-prune-private.txt" "not confirmed on this machine" && in_out "$d-init-device.txt" "corkern add team-notes" \
+        && in_out "$d-status.txt" "not confirmed on this machine"; then
+        ok "$d: harvest, prune and init-device leave ~/private-client alone; status says why"
+    else
+        bad "$d"; cat "$r" "$RES/$d-harvest-private.txt" "$RES/$d-prune-private.txt" | sed 's/^/     │ /' | head -20
+    fi
+done
+assert "no private-client conversation reached alpha's remote" \
+    bash -c "! git -C $SHARED/alpha.git log --all -p --format= | grep -q PRIVATE-CLIENT-TALK"
+
 section "no lost writes, convergence"
 for repo in alpha beta gus; do
     hist=$(git -C "$SHARED/$repo.git" log -p -m --all --format=)

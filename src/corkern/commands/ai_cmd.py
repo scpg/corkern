@@ -18,7 +18,7 @@ from corkern.commands.reminders import GLOBAL, format_items, open_items, read_to
 from corkern.commands.secrets_cmd import log_entries
 from corkern.commands.trust_cmd import UNTRUSTED, held_entries
 from corkern.config import NOT_CONFIRMED, check_projects, conf_entries, load_config, valid_slug
-from corkern.knowledge_repo import repo_symlinks
+from corkern.knowledge_repo import repo_symlinks, shown, tracked_machine_local
 from corkern.memory_index import usage
 
 PROG = "corkern"
@@ -163,10 +163,16 @@ def _safety_boxes(repo, slug: str | None) -> list[str]:
         boxes.append(_box("symlinks in the knowledge repo — held/ignored", [
             "  These synced files are symlinks; corkern never follows them and treats them",
             "  as absent (a link can point at any file on this machine):",
-            *[f"    {rel}" for rel in links[:10]],
+            *[f"    {shown(rel)}" for rel in links[:10]],
             *([f"    … and {len(links) - 10} more"] if len(links) > 10 else []),
             "  Tell the user. Do not read or write them; replace them with regular files."],
             f"→ {PROG} status lists them"))
+    tracked = tracked_machine_local(repo.path)
+    if tracked:
+        boxes.append(_box("per-machine files tracked in the knowledge repo", [
+            *[f"  tracked per-machine file: {shown(rel)} — remove it on the remote" for rel in tracked[:10]],
+            "  corkern never stages them again (this machine's copy stays local). Tell the user."],
+            f"→ {PROG} status"))
     entries = held_entries(repo.path)
     if entries:
         untrusted = len({sha for sha, reason in entries if reason == UNTRUSTED})
@@ -174,7 +180,7 @@ def _safety_boxes(repo, slug: str | None) -> list[str]:
         boxes.append(_box("memories held back", [
             "  Nothing new from the remote was loaded this session. Reasons:",
             *([f"  - {untrusted} commit(s) not signed by a device this machine trusts"] if untrusted else []),
-            *[f"  - {reason}" for reason in reasons[:8]],
+            *[f"  - {shown(reason)}" for reason in reasons[:8]],
             "  Tell the user; never recreate held content by hand. Review with:"],
             f"→ {PROG} trust"))
     recent = [e for e in log_entries()

@@ -213,6 +213,18 @@ has_slug() { [ -f "$1" ] && cut -d: -f1 -- "$1" | grep -qxF -- "$2"; }
 # scan_staged REPORT — the hooks' secret scan on everything staged in the knowledge repo: a secret
 # is replaced by a marker (the original stays in this machine's quarantine), a file corkern cannot
 # check is left out (reported). If the scan cannot run nothing stays staged and it fails (closed).
+# kr_add_all — `git add -A` in the knowledge repo, never a per-machine file (corkern.conf.local …),
+# whatever a .gitignore says: the installed hooks' own rule (ck_keep_local / ck_unstage_local);
+# fails closed (nothing staged) when it cannot be applied
+kr_add_all() {
+    # shellcheck source=/dev/null  # the installed hooks' lib (needs $KR, which is set)
+    ( . "$HOME/.local/share/corkern/hooks/lib.sh" || exit 1
+      ck_keep_local; git -C "$KR" add -A && ck_unstage_local ) && return 0
+    git -C "$KR" reset -q
+    err "a per-machine file would have been committed (or corkern's hooks are missing) — nothing committed; see: corkern status"
+    return 1
+}
+
 scan_staged() {
     local report="$1" f out hint
     local -a staged=() suspect=() redacted=()
@@ -311,7 +323,7 @@ carry_over() {
         done
         if [ "$rel" = corkern.conf ]; then added=$n; else localconf=$n; fi
     done
-    git -C "$KR" add -A
+    kr_add_all || return 1
     scan_staged "$report" || return 1
     if ! git -C "$KR" diff --cached --quiet; then
         run git -C "$KR" commit -q -m "corkern: carry over v1 changes from $host since the export" || return 1
@@ -335,7 +347,7 @@ carry_over() {
 scan_outgoing() {
     local report="$MIG_DIR/scan-report.txt"
     : > "$report"
-    git -C "$KR" add -A
+    kr_add_all || return 1
     scan_staged "$report" || return 1
     git -C "$KR" diff --cached --quiet || run git -C "$KR" commit -q -m "corkern: changes from the switch on $(hostname -s 2>/dev/null || hostname)" || return 1
     sed 's/^/    /' "$report" | tee -a "$LOG"

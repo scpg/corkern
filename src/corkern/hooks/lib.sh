@@ -217,9 +217,76 @@ ck_scan_staged() {
     return 0
 }
 
+# ── Per-machine files never leave this machine ────────────────────────────────────────────
+# CK_EXCLUDES are in .git/info/exclude, but git gives a .gitignore in the work tree priority: a
+# pushed `!corkern.conf.local` would make `git add -A` stage this machine's own files. So staging
+# decides: one already tracked is marked skip-worktree (never staged again; status names it), new
+# ones are unstaged right after `git add`, and a commit that still holds one is refused.
+# Matched by file name, any case, at any depth (knowledge_repo.is_machine_local is the twin).
+
+# ck_is_local PATH — its file name is a per-machine name
+ck_is_local() {
+    local b="${1##*/}" p
+    b="${b,,}"
+    # shellcheck disable=SC2053  # the right side is a glob on purpose
+    for p in "${CK_EXCLUDES[@]}"; do [[ "$b" == ${p,,} ]] && return 0; done
+    return 1
+}
+
+# ck_local_specs — pathspecs for every per-machine name; no .gitignore can defeat them
+ck_local_specs() { local p; for p in "${CK_EXCLUDES[@]}"; do printf ':(glob,icase)**/%s\n' "$p"; done; }
+
+# ck_keep_local — before `git add`: per-machine files git already tracks are never staged again
+ck_keep_local() {
+    local f
+    local -a specs=()
+    mapfile -t specs < <(ck_local_specs)
+    while IFS= read -r -d '' f; do
+        ck_git update-index --skip-worktree -- "$f" >/dev/null 2>&1
+    done < <(ck_git ls-files -z -- "${specs[@]}" 2>/dev/null)
+}
+
+# ck_unstage_local — after `git add`: unstage per-machine files; if one is still staged, unstage
+# everything and refuse (returns 1, nothing committed, reported)
+ck_unstage_local() {
+    local f
+    local -a specs=() bad=()
+    mapfile -t specs < <(ck_local_specs)
+    ck_git reset -q -- "${specs[@]}" >/dev/null 2>&1
+    while IFS= read -r -d '' f; do ck_is_local "$f" && bad+=("$f"); done \
+        < <(ck_git diff --cached --name-only --no-renames -z 2>/dev/null)
+    [ "${#bad[@]}" -eq 0 ] && return 0
+    ck_git reset -q >/dev/null 2>&1
+    ck_note commit "not committed: per-machine file(s) staged: ${bad[*]} (a .gitignore re-includes them? see: corkern status)"
+    return 1
+}
+
+# ck_reincludes BLOB — prints the first `!` line of a .gitignore blob that would re-include a
+# per-machine name (`!corkern.conf.local`, `!*.bak-*`, `!*`, `!memory/**` …); returns 1 if none.
+# An unreadable blob counts as re-including (fail closed).
+ck_reincludes() {
+    local text line pat probe
+    text=$(ck_git cat-file blob "$1" 2>/dev/null) || { printf 'unreadable'; return 0; }
+    while IFS= read -r line; do
+        line="${line%$'\r'}"
+        [[ "$line" == '!'* ]] || continue
+        while [[ "$line" == *' ' && "$line" != *'\ ' ]]; do line="${line% }"; done  # as git reads it
+        pat="${line#!}"; pat="${pat%/}"; pat="${pat##*/}"; pat="${pat,,}"
+        [ -n "$pat" ] || continue
+        ck_is_local "$pat" && { printf '%s' "$line"; return 0; }
+        for probe in corkern.conf.local .corkern.lock .last-sync-pull x.bak-1 .distill-prompt.md; do
+            # shellcheck disable=SC2053  # the right side is the .gitignore pattern
+            [[ "$probe" == $pat ]] && { printf '%s' "$line"; return 0; }
+        done
+    done <<< "$text"
+    return 1
+}
+
 # ck_commit_memory MESSAGE-PREFIX — stage memory/ (incl. new files) and commit with file names
 ck_commit_memory() {
+    ck_keep_local
     ck_git add -A -- memory/ 2>/dev/null || return 1
+    ck_unstage_local || return 1
     ck_scan_staged || return 1
     local changed
     changed=$(ck_git -c core.quotePath=false diff --cached --name-only -- memory/ 2>/dev/null \
@@ -325,7 +392,7 @@ ck_hold() {  # ck_hold HOOK MESSAGE LINES... — record held commits, report, re
 
 ck_verify_incoming() {
     local hook="$1" up="$2" trust="$CK_STATE/trusted_signers" accepted="$CK_STATE/accepted"
-    local head base commits meta path mode why sha raw
+    local head base commits meta path mode why sha raw nsha line
     local -a held=()
     local fail="could not inspect incoming commits — nothing integrated"
     head=$(ck_git rev-parse --verify -q 'HEAD^{commit}' 2>/dev/null) \
@@ -343,7 +410,13 @@ ck_verify_incoming() {
     while IFS= read -r -d '' meta && IFS= read -r -d '' path; do
         [ "${meta##* }" = D ] && continue                       # removing something is always fine
         mode=${meta#:}; mode=${mode#* }; mode=${mode%% *}       # ":old new osha nsha S" → new
-        why=$(ck_dangerous "$mode" "$path") || continue
+        if ! why=$(ck_dangerous "$mode" "$path"); then
+            [ "$(printf '%s' "${path##*/}" | tr '[:upper:]' '[:lower:]')" = .gitignore ] || continue
+            nsha=${meta#:}; nsha=${nsha#* * * }; nsha=${nsha%% *}  # ":old new osha nsha S" → nsha
+            line=$(ck_reincludes "$nsha") || continue
+            line=$(printf '%s' "$line" | tr -c '[:print:]' '?' | cut -c1-80)   # a teammate's text: data
+            why="re-includes this machine's own files ($line)"
+        fi
         sha=$(ck_git log -1 --format=%H --end-of-options "$head..$up" -- "$path" 2>/dev/null)
         held+=("${sha:-$up}"$'\t'"$why: $path")
     done < "$raw"
@@ -380,10 +453,12 @@ ck_in_progress() {
 }
 
 # ck_commit_all MESSAGE — commit every tracked-content change (memory, registry, global
-# instructions; sync state and secrets are excluded by .gitignore) so nothing blocks a rebase
+# instructions; never a per-machine file, see ck_unstage_local) so nothing blocks a rebase
 ck_commit_all() {
     ck_commit_memory "$1" || true
+    ck_keep_local
     ck_git add -A >/dev/null 2>&1 || return 1
+    ck_unstage_local || return 1
     ck_scan_staged || return 1
     ck_git diff --cached --quiet || ck_git commit -q -m \
         "$1: $(ck_git -c core.quotePath=false diff --cached --name-only | tr '\n' ' ')" >/dev/null 2>&1
@@ -423,6 +498,7 @@ ck_merge_keep_both() {
     ck_commit_all "auto: sync" || true
     if ck_git merge --no-edit -q --end-of-options "$up" >/dev/null 2>&1; then ck_stamp pull; return 0; fi
     while IFS= read -r -d '' f; do
+        ck_is_local "$f" && { ok=0; break; }                      # never a per-machine file
         if ck_git cat-file -e ":3:$f" 2>/dev/null; then
             ck_put ":3:$f" "$f" || { ok=0; break; }              # remote version at the path
             if ck_git cat-file -e ":2:$f" 2>/dev/null; then       # both sides have it → keep ours too

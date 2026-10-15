@@ -24,7 +24,7 @@ from pathlib import Path
 
 from corkern import guard
 from corkern.config import CONF_FILE, _parse_conf, confirm_projects, repo_state_dir
-from corkern.knowledge_repo import TEMPLATE, InitError, require_dir_or_absent
+from corkern.knowledge_repo import TEMPLATE, InitError, require_dir_or_absent, stage
 from corkern.secret_scan import HINT
 
 V1_REGISTRY = "projects.conf"
@@ -205,7 +205,7 @@ def migrate(bundle: Path, dest: Path, dry_run: bool = False) -> Plan:
     confirm_projects(target, _parse_conf(plan.files.get(CONF_FILE, b"").decode(errors="replace"), CONF_FILE))
     if not _redact(target, plan):
         return plan                 # fail closed: nothing committed unscanned
-    guard.run_git(target, "add", "-A")
+    stage(target, "-A")                           # never a per-machine file, whatever .gitignore says
     guard.run_git(target, "commit", "-q", "-m", MIGRATE_COMMIT_MSG)
     guard.remove_file(repo_state_dir(target) / PENDING)
     return plan

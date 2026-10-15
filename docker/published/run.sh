@@ -9,10 +9,13 @@ set -uo pipefail
 . /test/lib.sh
 : "${VERSION:?set VERSION, e.g. VERSION=2.0.0rc2}"
 INDEX="${INDEX:-pypi}"
+# TestPyPI: the wheel itself (its SHA-256 checked against the index first), dependencies only
+# from pypi.org. An index pair cannot do it: once corkern is on pypi.org, uv takes it only from the
+# first index that has it (against dependency confusion), and TestPyPI first would take typer/rich
+# from TestPyPI.
 case "$INDEX" in
-    pypi)     IDX=(--index-url https://pypi.org/simple/) ;;
-    testpypi) IDX=(--index-url https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple/) ;;
-    *)        echo "INDEX must be pypi or testpypi"; exit 2 ;;
+    pypi|testpypi) ;;
+    *) echo "INDEX must be pypi or testpypi"; exit 2 ;;
 esac
 REMOTE=/srv/remote/kr.git
 TOKEN="ghp_""PUBLISHEDTEST0123456789abcdefABCDEF01"     # synthetic, split so no scanner sees it here
@@ -38,12 +41,22 @@ for u in alice bob eve; do as "$u" git config --global user.name "$u"; as "$u" g
 assert "no corkern source in this image" bash -c "! grep -rlsq 'name = \"corkern\"' --include=pyproject.toml /test /home /opt /srv /usr/local"
 check  "the files on $INDEX match the index's SHA-256 digests" python3 /test/digests.py "$VERSION" "$INDEX"
 sed 's/^/     │ /' "$OUT"
+SPEC="corkern==$VERSION"
+if [ "$INDEX" = testpypi ]; then
+    SPEC=/tmp/corkern-$VERSION-py3-none-any.whl
+    check "download the wheel from TestPyPI (SHA-256 == the index's digest)" python3 /test/digests.py "$VERSION" testpypi --wheel-to "$SPEC"
+    chmod a+r "$SPEC"
+fi
 for u in alice bob; do
-    check "$u: uv tool install corkern==$VERSION" as "$u" uv tool install -q --refresh "${IDX[@]}" "corkern==$VERSION"
+    check "$u: uv tool install $SPEC (dependencies from pypi.org)" as "$u" uv tool install -q --refresh --index-url https://pypi.org/simple/ "$SPEC"
 done
 expect "alice: corkern --version"       "corkern $VERSION" as alice corkern --version
-assert "installed from the index (a wheel, no direct_url.json from a local path)" bash -c \
-       "d=\$(ls -d /home/alice/.local/share/uv/tools/corkern/lib/python*/site-packages/corkern-$VERSION.dist-info) && [ ! -e \"\$d/direct_url.json\" ]"
+DIST=$(ls -d /home/alice/.local/share/uv/tools/corkern/lib/python*/site-packages/corkern-"$VERSION".dist-info)
+if [ "$INDEX" = pypi ]; then
+    assert "installed from pypi.org (no direct_url.json: not a local path)" test ! -e "$DIST/direct_url.json"
+else
+    assert "installed from the TestPyPI wheel" grep -q "corkern-$VERSION-py3-none-any.whl" "$DIST/direct_url.json"
+fi
 
 section "alice: the first device"
 as alice mkdir -p /home/alice/dev/projects/demo

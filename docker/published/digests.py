@@ -1,6 +1,6 @@
 """Download every file of corkern VERSION from INDEX (pypi | testpypi) and compare its SHA-256
 with the digest the index publishes. Prints one line per file; exits 1 on a mismatch or when
-the release has no files."""
+the release has no files. `--wheel-to PATH` also saves the (checked) wheel there."""
 import hashlib
 import json
 import sys
@@ -8,6 +8,7 @@ import urllib.error
 import urllib.request
 
 version, index = sys.argv[1], sys.argv[2]
+wheel_to = sys.argv[sys.argv.index("--wheel-to") + 1] if "--wheel-to" in sys.argv else None
 host = {"pypi": "https://pypi.org", "testpypi": "https://test.pypi.org"}[index]
 try:
     with urllib.request.urlopen(f"{host}/pypi/corkern/{version}/json") as r:
@@ -17,8 +18,12 @@ except urllib.error.HTTPError as e:
 bad = 0
 for f in files:
     with urllib.request.urlopen(f["url"]) as r:
-        got = hashlib.sha256(r.read()).hexdigest()
+        data = r.read()
+    got = hashlib.sha256(data).hexdigest()
     want = f["digests"]["sha256"]
+    if wheel_to and got == want and f["filename"].endswith(".whl"):
+        with open(wheel_to, "wb") as out:
+            out.write(data)
     print(f"{'ok  ' if got == want else 'BAD '} {got}  {f['filename']}")
     bad += got != want
 sys.exit(1 if bad or not files else 0)

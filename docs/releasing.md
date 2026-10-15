@@ -48,18 +48,23 @@ version on TestPyPI first, release an `rc` of it.
    `publish-testpypi` uploads them to TestPyPI; the run then stops at `publish-pypi` with
    *Waiting for review*. Verify the package on TestPyPI first, in a clean environment:
 
-       uv tool install --index-url https://test.pypi.org/simple/ \
-           --extra-index-url https://pypi.org/simple/ corkern==2.0.0rc1
+       make test-published VERSION=2.0.0rc1 INDEX=testpypi
+
+   It downloads the wheel from TestPyPI (SHA-256 checked against the index), installs it with
+   its dependencies from pypi.org only, and runs two fresh devices in Docker (no source, no host
+   folder). Not `--index-url https://test.pypi.org/simple/ --extra-index-url
+   https://pypi.org/simple/`: once corkern is on pypi.org, uv takes it only from the first index
+   that has it (a guard against dependency confusion), and TestPyPI first would also take the
+   dependencies from TestPyPI. By hand, the same:
+
+       whl=$(curl -s https://test.pypi.org/pypi/corkern/2.0.0rc1/json \
+             | jq -r '.urls[] | select(.filename | endswith(".whl")) | .url')
+       uv tool install --index-url https://pypi.org/simple/ "corkern @ $whl"
        corkern --version          # corkern 2.0.0rc1
        uv tool uninstall corkern
 
-   and on two fresh devices in Docker, installed from TestPyPI (no source, no host folder):
-
-       make test-published VERSION=2.0.0rc1 INDEX=testpypi
-
    After the PyPI upload, the same against pypi.org: `make test-published VERSION=2.0.0rc1`.
 
-   `--extra-index-url` is there for the dependencies (typer, rich), which are not on TestPyPI.
    Then compare the SHA-256 sums in the `build` summary and *Review deployments → pypi →
    Approve and deploy*: the same files go to pypi.org. Users get the pre-release only when they
    ask for it (`pip install corkern==2.0.0rc1` or `--pre`).

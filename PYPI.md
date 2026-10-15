@@ -1,6 +1,6 @@
-> ⚠ **First test release — please do not use it yet.**
-> This is corkern's first upload to PyPI, published only to try the release process. It is
-> not meant for use. A proper version is planned for the coming weeks.
+> ⚠ **Test release — please do not use it yet.**
+> This is one of corkern's first uploads to PyPI, published only to try the release process. It
+> is not meant for use. A proper version is planned for the coming weeks.
 
 # corkern
 
